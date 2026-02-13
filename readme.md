@@ -7,26 +7,26 @@ gentlix-bank/
 │   └── seed/                        # Seed data (optional)
 ├── backend/
 │   ├── rust/
-│   │   ├── Cargo.toml               # Rust workspace (multiple crates) [web:36]
+│   │   ├── Cargo.toml               # Rust workspace (multiple crates)
 │   │   ├── crates/
 │   │   │   ├── domain/              # Business rules & entities (no HTTP, no DB)
 │   │   │   ├── service/             # Use-cases (application logic)
-│   │   │   ├── db/                  # SQLx + Postgres + migrations runner [web:12]
+│   │   │   ├── db/                  # SQLx + Postgres + migrations runner; Hashing: argon2 
 │   │   │   ├── api/                 # DTO + OpenAPI generation (utoipa)
-│   │   │   └── server/              # axum REST API (Tokio runtime) [web:8]
+│   │   │   └── server/              # axum REST API (Tokio runtime)
 │   │   └── README.md
 │   └── c/
 │       ├── CMakeLists.txt
 │       ├── src/
 │       │   ├── domain/              # Business rules & entities (C)
 │       │   ├── service/             # Use-cases (C)
-│       │   ├── db/                  # Postgres access: libpq
+│       │   ├── db/                  # Postgres access: libpq; Hashing: libsodium 
 │       │   ├── http/                # HTTPS server (ex: libmicrohttpd/civetweb)
 │       │   └── auth/                # JWT (ex: libjwt)
 │       └── README.md
 ├── sdk/
-│   ├── typescript/                  # Generated TS client from OpenAPI (React + Tauri UI) [web:79]
-│   ├── kotlin/                      # Generated Kotlin client from OpenAPI (Android) [web:79]
+│   ├── typescript/                  # Generated TS client from OpenAPI (React + Tauri UI)
+│   ├── kotlin/                      # Generated Kotlin client from OpenAPI (Android)
 │   └── c/                           # C wrapper: functions -> REST calls (used by GTK admin app)
 ├── clients/
 │   ├── web-react/                   # User Mode (browser)
