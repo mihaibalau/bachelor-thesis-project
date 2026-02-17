@@ -23,3 +23,24 @@ impl From<UserId> for i64 {
         value.0
     }
 }
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AccountId(pub i64);
+
+impl fmt::Display for AccountId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<i64> for AccountId {
+    fn from(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<AccountId> for i64{
+    fn from(value: AccountId) -> Self{
+        value.0
+    }
+}
