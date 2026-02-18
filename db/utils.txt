@@ -1,0 +1,1 @@
+docker exec -it gentlix-postgres psql -U mihai -d gentlix_bank

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO users (tag, email, first_name, last_name, password_hash)\n            VALUES ($1, $2, $3, $4, $5)\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b75b48093ad3d981d3530638fffdcd5c78b48cf1968e0d592e184277b14704a9"
+}
