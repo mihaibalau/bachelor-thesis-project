@@ -1,4 +1,4 @@
-
+use chrono::NaiveDate;
 use crate::domain::errors::DomainError;
 use crate::domain::ids::UserId;
 use crate::domain::value::email::Email;
@@ -13,7 +13,7 @@ pub struct User {
     last_name: String,
 
     phone: Option<String>,
-    birth_date: Option<String>,
+    birth_date: Option<chrono::NaiveDate>,
 
     password_hash: String,
 }
@@ -26,7 +26,7 @@ impl User {
         first_name: impl Into<String>,
         last_name: impl Into<String>,
         phone: Option<String>,
-        birth_date: Option<String>,
+        birth_date: Option<chrono::NaiveDate>,
         password_hash: impl Into<String>,
     ) -> Result<Self, DomainError> {
         Self::build(
@@ -49,7 +49,7 @@ impl User {
         first_name: impl Into<String>,
         last_name: impl Into<String>,
         phone: Option<String>,
-        birth_date: Option<String>,
+        birth_date: Option<chrono::NaiveDate>,
         password_hash: impl Into<String>,
     ) -> Result<Self, DomainError> {
         Self::build(
@@ -71,7 +71,7 @@ impl User {
         first_name: impl Into<String>,
         last_name: impl Into<String>,
         phone: Option<String>,
-        birth_date: Option<String>,
+        birth_date: Option<chrono::NaiveDate>,
         password_hash: impl Into<String>,
     ) -> Result<Self, DomainError> {
         let tag = normalize_required(tag.into(), "Tag")?;
@@ -80,15 +80,6 @@ impl User {
         let password_hash = normalize_required(password_hash.into(), "Password hash")?;
 
         let phone = normalize_optional(phone);
-        let birth_date = normalize_optional(birth_date);
-
-        if let Some(ref d) = birth_date {
-            if d.len() != 10 {
-                return Err(DomainError::validation(
-                    "Birth date must look like YYYY-MM-DD",
-                ));
-            }
-        }
 
         Ok(Self {
             id,
@@ -109,7 +100,7 @@ impl User {
     pub fn first_name(&self) -> &str { &self.first_name }
     pub fn last_name(&self) -> &str { &self.last_name }
     pub fn phone(&self) -> Option<&str> { self.phone.as_deref() }
-    pub fn birth_date(&self) -> Option<&str> { self.birth_date.as_deref() }
+    pub fn birth_date(&self) -> Option<NaiveDate> { self.birth_date}
     pub fn password_hash(&self) -> &str { &self.password_hash }
 
     pub fn set_tag(&mut self, tag: impl Into<String>) -> Result<(), DomainError> {
@@ -135,15 +126,7 @@ impl User {
         self.phone = normalize_optional(phone);
     }
 
-    pub fn set_birth_date(&mut self, birth_date: Option<String>) -> Result<(), DomainError> {
-        let birth_date = normalize_optional(birth_date);
-        if let Some(ref d) = birth_date {
-            if d.len() != 10 {
-                return Err(DomainError::validation(
-                    "Birth date must look like YYYY-MM-DD",
-                ));
-            }
-        }
+    pub fn set_birth_date(&mut self, birth_date: Option<chrono::NaiveDate>) -> Result<(), DomainError> {
         self.birth_date = birth_date;
         Ok(())
     }

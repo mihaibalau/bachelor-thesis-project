@@ -1,7 +1,6 @@
--- db/migrations/001_init.sql
+
 BEGIN;
 
--- USERS
 CREATE TABLE IF NOT EXISTS users (
   id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   tag           TEXT NOT NULL UNIQUE,
@@ -13,52 +12,61 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL
 );
 
--- SUB ACCOUNTS (MAIN/SAVINGS/CREDIT_CARD etc.)
-CREATE TABLE IF NOT EXISTS sub_accounts (
-  id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type      TEXT NOT NULL,
-  currency  CHAR(3) NOT NULL DEFAULT 'RON',
-  balance   NUMERIC(18,2) NOT NULL DEFAULT 0,
-  iban 		TEXT NOT NULL UNIQUE,
 
-  CONSTRAINT sub_accounts_balance_non_negative CHECK (balance >= 0),
-  CONSTRAINT sub_accounts_type_check CHECK (type IN ('MAIN', 'SAVINGS', 'CREDIT_CARD'))
+CREATE TABLE IF NOT EXISTS accounts (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+  account_type  TEXT NOT NULL,
+  currency      CHAR(3) NOT NULL,
+
+  balance_cents BIGINT NOT NULL DEFAULT 0,
+  iban          TEXT NOT NULL UNIQUE,
+
+  CONSTRAINT accounts_balance_cents_non_negative CHECK (balance_cents >= 0),
+  CONSTRAINT accounts_account_type_check CHECK (account_type IN ('Savings', 'Credit', 'Regular')),
+  CONSTRAINT accounts_currency_check CHECK (currency IN ('RON', 'EUR', 'USD'))
 );
 
--- AFFILIATES: shortcut
+
 CREATE TABLE IF NOT EXISTS affiliates (
   owner_user_id            BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  recipient_sub_account_id BIGINT NOT NULL REFERENCES sub_accounts(id) ON DELETE CASCADE,
-  nickname                 TEXT,
-  
-  PRIMARY KEY (owner_user_id, recipient_sub_account_id)
+  recipient_sub_account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  nickname                 TEXT NOT NULL,
+
+  PRIMARY KEY (owner_user_id, recipient_sub_account_id),
+
+  CONSTRAINT affiliates_nickname_non_empty CHECK (length(trim(nickname)) > 0)
 );
 
 
--- TRANSACTIONS
 CREATE TABLE IF NOT EXISTS transactions (
-  id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  from_sub_account_id BIGINT NOT NULL REFERENCES sub_accounts(id) ON DELETE RESTRICT,
-  to_sub_account_id   BIGINT NOT NULL REFERENCES sub_accounts(id) ON DELETE RESTRICT,
-  type               TEXT NOT NULL,
-  amount             NUMERIC(18,2) NOT NULL,
-  recorded_on        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  description        TEXT,
+  id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  from_account_id  BIGINT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+  to_account_id    BIGINT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
 
-  CONSTRAINT transactions_amount_positive CHECK (amount > 0),
-  CONSTRAINT transactions_type_check CHECK (type IN ('DEPOSIT', 'WITHDRAW', 'SEND', 'TRANSFER')),
-  CONSTRAINT transactions_from_to_different CHECK (from_sub_account_id <> to_sub_account_id)
+  transaction_type TEXT NOT NULL,
+  value_cents      BIGINT NOT NULL,
 
+  recorded_on      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  description      TEXT NOT NULL,
+
+  CONSTRAINT transactions_value_cents_non_negative CHECK (value_cents >= 0),
+  CONSTRAINT transactions_type_check CHECK (transaction_type IN ('deposit', 'withdrawal', 'send', 'transfer')),
+  CONSTRAINT transactions_from_to_different CHECK (from_account_id <> to_account_id),
+  CONSTRAINT transactions_description_non_empty CHECK (length(trim(description)) > 0)
 );
 
-CREATE INDEX IF NOT EXISTS idx_sub_accounts_user_id ON sub_accounts(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
+
 CREATE INDEX IF NOT EXISTS idx_affiliates_owner_user_id ON affiliates(owner_user_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_from_sub_account_id ON transactions(from_sub_account_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_to_sub_account_id ON transactions(to_sub_account_id);
+CREATE INDEX IF NOT EXISTS idx_affiliates_recipient_sub_account_id ON affiliates(recipient_sub_account_id);
 
+CREATE INDEX IF NOT EXISTS idx_transactions_from_account_id ON transactions(from_account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_to_account_id ON transactions(to_account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_recorded_on ON transactions(recorded_on);
 
--- ADMIN MODE
 
 CREATE TABLE IF NOT EXISTS admins (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -82,33 +90,44 @@ CREATE TABLE IF NOT EXISTS admins (
 CREATE TABLE IF NOT EXISTS admin_audit_log (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   admin_id BIGINT NOT NULL REFERENCES admins(id) ON DELETE RESTRICT,
-  action TEXT NOT NULL,                 -- ex: CREATE_ADMIN, DELETE_ADMIN, MANUAL_DEPOSIT
-  target_type TEXT,                     -- ex: admin/user/sub_account/transaction
-  target_key TEXT,                      
-  metadata JSONB,                       -- details; C - libpq, Rust - sqlx
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_key TEXT,
+  metadata JSONB,
   recorded_on TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_audit_log_admin_id ON admin_audit_log(admin_id);
 CREATE INDEX IF NOT EXISTS idx_admin_audit_log_recorded_on ON admin_audit_log(recorded_on);
 
-
+-- =========================================================
 -- INIT ENTITIES
-
+-- =========================================================
 INSERT INTO users (tag, email, first_name, last_name, phone, birth_date, password_hash)
-VALUES ('__bank__', 'contact@bank-gentlix.ro', 'BANK', 'SYSTEM', NULL, NULL, '$argon2id$v=19$m=65536,t=3,p=1$o0+BWRVwggGxBCH91PdySA$g9QoISq+S3jS1bO6MAyJZGlL5ljn2VXuHWYdal9CO7I')
-ON CONFLICT (tag) DO NOTHING;  -- safe re-run
+VALUES (
+  '__bank__',
+  'contact@bank-gentlix.ro',
+  'BANK',
+  'SYSTEM',
+  NULL,
+  NULL,
+  '$argon2id$v=19$m=65536,t=3,p=1$o0+BWRVwggGxBCH91PdySA$g9QoISq+S3jS1bO6MAyJZGlL5ljn2VXuHWYdal9CO7I'
+)
+ON CONFLICT (tag) DO NOTHING;
 
-
-INSERT INTO sub_accounts (user_id, type, currency, balance, iban)
-SELECT u.id, 'MAIN', 'RON', 10000, 'RO00GTLXVAULT000000000000'
+INSERT INTO accounts (user_id, account_type, currency, balance_cents, iban)
+SELECT u.id, 'Regular', 'RON', 1000000, 'RO00GTLXVAULT000000000000'  -- 10,000.00 RON in cents
 FROM users u
 WHERE u.tag = '__bank__'
-ON CONFLICT (iban) DO NOTHING;  -- safe re-run
-
+ON CONFLICT (iban) DO NOTHING;
 
 INSERT INTO admins (username, password_hash, role, created_by_admin_id)
-VALUES ('bank_admin', '$argon2id$v=19$m=65536,t=3,p=1$o0+BWRVwggGxBCH91PdySA$g9QoISq+S3jS1bO6MAyJZGlL5ljn2VXuHWYdal9CO7I', 'ROOT', NULL)
-ON CONFLICT (username) DO NOTHING;  -- safe re-run 
+VALUES (
+  'bank_admin',
+  '$argon2id$v=19$m=65536,t=3,p=1$o0+BWRVwggGxBCH91PdySA$g9QoISq+S3jS1bO6MAyJZGlL5ljn2VXuHWYdal9CO7I',
+  'ROOT',
+  NULL
+)
+ON CONFLICT (username) DO NOTHING;
 
 COMMIT;

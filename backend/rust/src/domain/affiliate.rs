@@ -1,6 +1,5 @@
 use crate::domain::errors::DomainError;
 use crate::domain::ids::{AccountId, UserId};
-use crate::domain::sub_accounts::SubAccount;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Affiliate {

@@ -6,7 +6,7 @@ use crate::domain::value::currency::Currency;
 use crate::domain::value::iban::IBAN;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SubAccount{
+pub struct Account{
     id: Option<AccountId>,
     user_id: UserId,
     account_type: AccountType,
@@ -15,7 +15,7 @@ pub struct SubAccount{
     iban: IBAN
 }
 
-impl SubAccount{
+impl Account{
     pub fn create(
         user_id: UserId,
         account_type: AccountType,
