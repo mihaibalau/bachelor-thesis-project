@@ -116,6 +116,61 @@ impl UserRepo {
         Ok(UserId(rec.id))
     }
 
+    pub async fn update(&self, user: &User) -> Result<(), RepoError> {
+        let id = user.id().ok_or_else(|| {
+            RepoError::from(DomainError::validation(
+                "Cannot update a User without an id",
+            ))
+        })?;
+
+        let result = sqlx::query!(
+            r#"
+            UPDATE users
+            SET tag = $1,
+                email = $2,
+                first_name = $3,
+                last_name = $4,
+                phone = $5,
+                birth_date = $6,
+                password_hash = $7
+            WHERE id = $8
+            "#,
+            user.tag(),
+            user.email().as_str(),
+            user.first_name(),
+            user.last_name(),
+            user.phone(),
+            user.birth_date(),
+            user.password_hash(),
+            id.0,
+        )
+            .execute(self.db.pool())
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(RepoError::not_found("user"));
+        }
+
+        Ok(())
+    }
+
+    pub async fn delete(&self, user_id: UserId) -> Result<(), RepoError> {
+        let result = sqlx::query!(
+            r#"
+            DELETE FROM users
+            WHERE id = $1
+            "#,
+            user_id.0
+        )
+            .execute(self.db.pool())
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(RepoError::not_found("user"));
+        }
+
+        Ok(())
+    }
 }
 
 impl TryFrom<UserRow> for User {
