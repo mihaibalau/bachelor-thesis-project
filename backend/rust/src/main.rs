@@ -1,6 +1,7 @@
 mod db;
+mod domain;
 
-use db::test::Db;
+use db::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,18 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.ping().await?;
     println!("DB ping OK");
 
-    let user_id = db.insert_user(
-        "mihiblu",
-        "mihiblu00@gmail.com",
-        "Mihai",
-        "Balau",
-        "fake_hash",
-    ).await?;
 
-    println!("Inserted user_id = {user_id}");
-
-    let accounts = db.get_accounts_for_user(user_id).await?;
-    println!("Accounts for user: {accounts:#?}");
 
     Ok(())
 }
