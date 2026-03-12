@@ -1,8 +1,26 @@
 #include "include/transaction.h"
 
+#include <assert.h>
 #include <ctype.h>
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* Concrete representation, hidden. */
+struct Transaction {
+    bool has_id;
+    TransactionId id;
+
+    AccountId from_account_id;
+    AccountId to_account_id;
+
+    TransactionType transaction_type;
+    int64_t value_cents;
+
+    time_t recorded_on;
+    char description[256];
+};
 
 static bool normalize_required_str(
     const char *s,
@@ -15,10 +33,13 @@ static bool normalize_required_str(
         if (err) *err = domain_error_validation("field is null");
         return false;
     }
+
     const char *start = s;
     while (*start && isspace((unsigned char)*start)) ++start;
+
     const char *end = start + strlen(start);
     while (end > start && isspace((unsigned char)end[-1])) --end;
+
     size_t len = (size_t)(end - start);
     if (len == 0) {
         char msg[128];
@@ -26,14 +47,16 @@ static bool normalize_required_str(
         if (err) *err = domain_error_validation(msg);
         return false;
     }
+
     if (len >= out_size) len = out_size - 1;
     memcpy(out, start, len);
     out[len] = '\0';
+
     if (err) *err = domain_error_ok();
     return true;
 }
 
-static bool transaction_build(
+static bool transaction_init(
     bool has_id,
     TransactionId id,
     AccountId from_account_id,
@@ -80,22 +103,42 @@ static bool transaction_build(
     return true;
 }
 
-bool transaction_create(
+static Transaction *transaction_new_object(DomainError *err) {
+    Transaction *t = (Transaction *)malloc(sizeof *t);
+    if (!t) {
+        if (err) *err = domain_error_validation("Transaction: out of memory");
+        return NULL;
+    }
+    return t;
+}
+
+/* Public API */
+
+Transaction *transaction_create(
     AccountId from_account_id,
     AccountId to_account_id,
     TransactionType transaction_type,
     int64_t value_cents,
     const char *description,
-    Transaction *out,
     DomainError *err
 ) {
     TransactionId dummy = { 0 };
-    return transaction_build(false, dummy, from_account_id, to_account_id,
-                             transaction_type, value_cents, 0, false,
-                             description, out, err);
+    Transaction *t = transaction_new_object(err);
+    if (!t) {
+        return NULL;
+    }
+
+    if (!transaction_init(false, dummy, from_account_id, to_account_id,
+                          transaction_type, value_cents, 0, false,
+                          description, t, err)) {
+        free(t);
+        return NULL;
+    }
+
+    return t;
 }
 
-bool transaction_rehydrate(
+Transaction *transaction_rehydrate(
     TransactionId id,
     AccountId from_account_id,
     AccountId to_account_id,
@@ -103,28 +146,78 @@ bool transaction_rehydrate(
     int64_t value_cents,
     time_t recorded_on,
     const char *description,
-    Transaction *out,
     DomainError *err
 ) {
-    return transaction_build(true, id, from_account_id, to_account_id,
-                             transaction_type, value_cents, recorded_on, true,
-                             description, out, err);
+    Transaction *t = transaction_new_object(err);
+    if (!t) {
+        return NULL;
+    }
+
+    if (!transaction_init(true, id, from_account_id, to_account_id,
+                          transaction_type, value_cents, recorded_on, true,
+                          description, t, err)) {
+        free(t);
+        return NULL;
+    }
+
+    return t;
 }
 
 /* Getters */
 
-bool transaction_has_id(const Transaction *t) { return t && t->has_id; }
-TransactionId transaction_id(const Transaction *t) { return t->id; }
-AccountId transaction_from_account_id(const Transaction *t) { return t->from_account_id; }
-AccountId transaction_to_account_id(const Transaction *t) { return t->to_account_id; }
-TransactionType transaction_type_get(const Transaction *t) { return t->transaction_type; }
-const char *transaction_type_str(const Transaction *t) { return transaction_type_as_str(t->transaction_type); }
-int64_t transaction_value_cents(const Transaction *t) { return t->value_cents; }
-time_t transaction_recorded_on(const Transaction *t) { return t->recorded_on; }
-const char *transaction_description(const Transaction *t) { return t->description; }
+bool transaction_has_id(const Transaction *t) {
+    assert(t);
+    return t->has_id;
+}
+
+TransactionId transaction_id(const Transaction *t) {
+    assert(t);
+    return t->id;
+}
+
+AccountId transaction_from_account_id(const Transaction *t) {
+    assert(t);
+    return t->from_account_id;
+}
+
+AccountId transaction_to_account_id(const Transaction *t) {
+    assert(t);
+    return t->to_account_id;
+}
+
+TransactionType transaction_type_get(const Transaction *t) {
+    assert(t);
+    return t->transaction_type;
+}
+
+const char *transaction_type_str(const Transaction *t) {
+    assert(t);
+    return transaction_type_as_str(t->transaction_type);
+}
+
+int64_t transaction_value_cents(const Transaction *t) {
+    assert(t);
+    return t->value_cents;
+}
+
+time_t transaction_recorded_on(const Transaction *t) {
+    assert(t);
+    return t->recorded_on;
+}
+
+const char *transaction_description(const Transaction *t) {
+    assert(t);
+    return t->description;
+}
 
 void transaction_set_id_after_insert(Transaction *t, TransactionId id) {
     if (!t) return;
     t->has_id = true;
     t->id = id;
+}
+
+/* Destructor */
+
+void transaction_free(Transaction *t) {
+    free(t);
 }

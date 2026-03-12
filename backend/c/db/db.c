@@ -1,0 +1,88 @@
+#include "include/db.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+struct Db {
+    PGconn *conn;
+};
+
+bool db_connect(const char *conninfo, Db **out, RepoError *err) {
+    if (!conninfo || !out) {
+        if (err) *err = repo_error_db("Db: invalid arguments");
+        return false;
+    }
+
+    Db *db = (Db *)malloc(sizeof *db);
+    if (!db) {
+        if (err) *err = repo_error_db("Db: out of memory");
+        return false;
+    }
+
+    db->conn = PQconnectdb(conninfo);
+    if (PQstatus(db->conn) != CONNECTION_OK) {
+        const char *msg = PQerrorMessage(db->conn);
+        if (err) *err = repo_error_db(msg);
+        PQfinish(db->conn);
+        free(db);
+        return false;
+    }
+
+    if (err) *err = repo_error_ok();
+    *out = db;
+    return true;
+}
+
+void db_close(Db *db) {
+    if (!db) return;
+    if (db->conn) {
+        PQfinish(db->conn);
+        db->conn = NULL;
+    }
+    free(db);
+}
+
+PGconn *db_raw_connection(Db *db) {
+    return db ? db->conn : NULL;
+}
+
+PGresult *db_exec_params(
+    Db *db,
+    const char *sql,
+    int n_params,
+    const char *const *param_values,
+    RepoError *err
+) {
+    if (!db || !sql) {
+        if (err) *err = repo_error_db("Db: invalid arguments");
+        return NULL;
+    }
+
+    PGresult *res = PQexecParams(
+        db->conn,
+        sql,
+        n_params,
+        NULL,                /* param types: infer from text */
+        param_values,
+        NULL,                /* param lengths: all text */
+        NULL,                /* param formats: all text */
+        0                    /* result format: text */
+    );
+
+    if (!res) {
+        if (err) *err = repo_error_db("Db: PQexecParams returned NULL");
+        return NULL;
+    }
+
+    ExecStatusType status = PQresultStatus(res);
+    if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
+        const char *msg = PQresultErrorMessage(res);
+        if (!msg || msg[0] == '\0') msg = PQerrorMessage(db->conn);
+        if (err) *err = repo_error_db(msg);
+        PQclear(res);
+        return NULL;
+    }
+
+    if (err) *err = repo_error_ok();
+    return res;
+}

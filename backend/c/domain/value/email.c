@@ -27,7 +27,10 @@ bool email_try_create(const char *raw, Email *out, DomainError *err) {
         if (err) *err = domain_error_validation("Email must not be empty");
         return false;
     }
-    if (len > EMAIL_MAX_LEN) len = EMAIL_MAX_LEN;
+    if (len > EMAIL_MAX_LEN) {
+        if (err) *err = domain_error_validation("Email too long");
+        return false;
+    }
 
     char buffer[EMAIL_MAX_LEN + 1];
     memcpy(buffer, start, len);

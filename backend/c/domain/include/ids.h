@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+/* Strongly-typed IDs to avoid mixing entities. */
+
 typedef struct {
     int64_t value;
 } UserId;
@@ -14,6 +16,8 @@ typedef struct {
 typedef struct {
     int64_t value;
 } TransactionId;
+
+/* Conversions */
 
 static inline UserId user_id_from_i64(int64_t v) {
     UserId id = { v };
@@ -42,4 +46,4 @@ static inline int64_t transaction_id_to_i64(TransactionId id) {
     return id.value;
 }
 
-#endif
+#endif /* C_IDS_H */

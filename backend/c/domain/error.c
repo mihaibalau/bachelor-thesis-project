@@ -1,4 +1,5 @@
 #include "include/error.h"
+
 #include <string.h>
 
 DomainError domain_error_ok(void) {
@@ -11,8 +12,14 @@ DomainError domain_error_ok(void) {
 DomainError domain_error_validation(const char *msg) {
     DomainError err;
     err.code = DOMAIN_ERROR_VALIDATION;
-    strncpy(err.message, msg, sizeof(err.message) - 1);
-    err.message[sizeof(err.message) - 1] = '\0';
+
+    if (!msg) {
+        err.message[0] = '\0';
+        return err;
+    }
+
+    strncpy(err.message, msg, DOMAIN_ERROR_MESSAGE_MAX - 1);
+    err.message[DOMAIN_ERROR_MESSAGE_MAX - 1] = '\0';
     return err;
 }
 

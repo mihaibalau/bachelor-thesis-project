@@ -1,6 +1,21 @@
 #include "include/account.h"
 
-static bool account_build(
+#include <assert.h>
+#include <stdlib.h>
+
+/* Concrete representation, hidden from consumers. */
+struct Account {
+    bool has_id;
+    AccountId id;
+
+    UserId user_id;
+    AccountType account_type;
+    Currency currency;
+    int64_t balance_cents;
+    IBAN iban;
+};
+
+static bool account_init(
     bool has_id,
     AccountId id,
     UserId user_id,
@@ -33,43 +48,99 @@ static bool account_build(
     return true;
 }
 
-bool account_create(
+static Account *account_new_object(DomainError *err) {
+    Account *a = (Account *)malloc(sizeof *a);
+    if (!a) {
+        if (err) *err = domain_error_validation("Account: out of memory");
+        return NULL;
+    }
+    return a;
+}
+
+/* Public API */
+
+Account *account_create(
     UserId user_id,
     AccountType account_type,
     Currency currency,
     int64_t balance_cents,
     const IBAN *iban,
-    Account *out,
     DomainError *err
 ) {
     AccountId dummy = { 0 };
-    return account_build(false, dummy, user_id, account_type, currency,
-                         balance_cents, iban, out, err);
+    Account *a = account_new_object(err);
+    if (!a) {
+        return NULL;
+    }
+
+    if (!account_init(false, dummy, user_id, account_type, currency,
+                      balance_cents, iban, a, err)) {
+        free(a);
+        return NULL;
+    }
+
+    return a;
 }
 
-bool account_rehydrate(
+Account *account_rehydrate(
     AccountId id,
     UserId user_id,
     AccountType account_type,
     Currency currency,
     int64_t balance_cents,
     const IBAN *iban,
-    Account *out,
     DomainError *err
 ) {
-    return account_build(true, id, user_id, account_type, currency,
-                         balance_cents, iban, out, err);
+    Account *a = account_new_object(err);
+    if (!a) {
+        return NULL;
+    }
+
+    if (!account_init(true, id, user_id, account_type, currency,
+                      balance_cents, iban, a, err)) {
+        free(a);
+        return NULL;
+    }
+
+    return a;
 }
 
 /* Getters */
 
-bool account_has_id(const Account *a) { return a && a->has_id; }
-AccountId account_id(const Account *a) { return a->id; }
-UserId account_user_id(const Account *a) { return a->user_id; }
-AccountType account_type_get(const Account *a) { return a->account_type; }
-Currency account_currency(const Account *a) { return a->currency; }
-int64_t account_balance_cents(const Account *a) { return a->balance_cents; }
-const IBAN *account_iban(const Account *a) { return &a->iban; }
+bool account_has_id(const Account *a) {
+    assert(a);
+    return a->has_id;
+}
+
+AccountId account_id(const Account *a) {
+    assert(a);
+    return a->id;
+}
+
+UserId account_user_id(const Account *a) {
+    assert(a);
+    return a->user_id;
+}
+
+AccountType account_type_get(const Account *a) {
+    assert(a);
+    return a->account_type;
+}
+
+Currency account_currency(const Account *a) {
+    assert(a);
+    return a->currency;
+}
+
+int64_t account_balance_cents(const Account *a) {
+    assert(a);
+    return a->balance_cents;
+}
+
+const IBAN *account_iban(const Account *a) {
+    assert(a);
+    return &a->iban;
+}
 
 /* Business logic */
 
@@ -82,11 +153,11 @@ bool account_credit(Account *a, int64_t amount_cents, DomainError *err) {
         if (err) *err = domain_error_validation("Credit amount must be > 0");
         return false;
     }
-    /* saturating_add Rust – C simple version */
     if (amount_cents > 0 && a->balance_cents > INT64_MAX - amount_cents) {
         if (err) *err = domain_error_validation("Balance overflow");
         return false;
     }
+
     a->balance_cents += amount_cents;
     if (err) *err = domain_error_ok();
     return true;
@@ -105,6 +176,7 @@ bool account_debit(Account *a, int64_t amount_cents, DomainError *err) {
         if (err) *err = domain_error_validation("Insufficient funds");
         return false;
     }
+
     a->balance_cents -= amount_cents;
     if (err) *err = domain_error_ok();
     return true;
@@ -114,4 +186,10 @@ void account_set_id_after_insert(Account *a, AccountId id) {
     if (!a) return;
     a->has_id = true;
     a->id = id;
+}
+
+/* Destructor */
+
+void account_free(Account *a) {
+    free(a);
 }
