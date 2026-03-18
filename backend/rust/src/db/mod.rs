@@ -1,8 +1,8 @@
-mod user_repo;
-mod account_repo;
-mod transaction_repo;
-mod affiliate_repo;
-mod errors;
+pub mod user_repo;
+pub mod account_repo;
+pub mod transaction_repo;
+pub mod affiliate_repo;
+pub mod errors;
 
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Duration;

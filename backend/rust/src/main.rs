@@ -1,5 +1,6 @@
 mod db;
 mod domain;
+mod service;
 
 use db::*;
 
