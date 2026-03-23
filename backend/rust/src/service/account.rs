@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use async_trait::async_trait;
+use crate::db::account_repo::AccountRepo;
 use crate::db::errors::RepoError;
 use crate::domain::account::Account;
 use crate::domain::ids::{AccountId, UserId};
@@ -6,9 +8,56 @@ use crate::domain::value::account_type::AccountType;
 use crate::domain::value::currency::Currency;
 use crate::domain::value::iban::IBAN;
 use crate::service::errors::{ServiceError, ServiceResult};
-use crate::service::user::AccountRepository;
 
-/// Service responsible for account lifecycle and balance-heavy operations.
+/// Repository abstraction for accounts
+///
+/// Defining this as a trait lets you unit-test `AccountService` with
+/// in-memory fakes instead of hitting Postgres
+#[async_trait]
+pub trait AccountRepository: Send + Sync {
+    async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Account>, RepoError>;
+    async fn exists_by_account_type(
+        &self,
+        user_id: UserId,
+        account_type: AccountType,
+    ) -> Result<bool, RepoError>;
+    async fn exists_by_iban(&self, iban: &str) -> Result<bool, RepoError>;
+    async fn get_by_id(&self, account_id: AccountId) -> Result<Account, RepoError>;
+    async fn insert(&self, account: &Account) -> Result<AccountId, RepoError>;
+}
+
+/// Thin adapter: your concrete SQLx repo implements the trait
+///
+/// This mirrors the "port/adapter" pattern and keeps the service layer
+/// decoupled from SQLx's exact API
+#[async_trait]
+impl AccountRepository for AccountRepo {
+    async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Account>, RepoError> {
+        self.list_for_user(user_id).await
+    }
+
+    async fn exists_by_account_type(
+        &self,
+        user_id: UserId,
+        account_type: AccountType,
+    ) -> Result<bool, RepoError> {
+        self.exists_by_account_type(user_id, account_type).await
+    }
+
+    async fn exists_by_iban(&self, iban: &str) -> Result<bool, RepoError> {
+        self.exists_by_iban(iban).await
+    }
+
+    async fn get_by_id(&self, account_id: AccountId) -> Result<Account, RepoError> {
+        self.get_by_id(account_id).await
+    }
+
+    async fn insert(&self, account: &Account) -> Result<AccountId, RepoError> {
+        self.insert(account).await
+    }
+}
+
+/// Service responsible for account lifecycle and balance-heavy operations
 #[derive(Clone)]
 pub struct AccountService<R>
 where
@@ -56,10 +105,10 @@ where
             ));
         }
 
-        // 4. Build the domain `Account`.
+        // 4. Build the domain `Account`
         // Following the same "rehydrate vs constructors" pattern as your repos
         // (see TryFrom<AccountRow>), here we use a dedicated constructor for
-        // new accounts.
+        // new accounts
         let account = Account::create(
             user_id,
             account_type,
@@ -72,7 +121,7 @@ where
         Ok(account_id)
     }
 
-    /// Load a single account, mapping RepoError::NotFound into ServiceError::NotFound.
+    /// Load a single account, mapping RepoError::NotFound into ServiceError::NotFound
     pub async fn get_account(&self, account_id: AccountId) -> ServiceResult<Account> {
         match self.repo.get_by_id(account_id).await {
             Ok(account) => Ok(account),

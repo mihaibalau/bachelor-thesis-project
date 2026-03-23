@@ -1,5 +1,3 @@
-use std::fmt;
-
 use anyhow::Error as AnyError;
 use thiserror::Error;
 

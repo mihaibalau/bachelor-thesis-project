@@ -5,7 +5,6 @@ pub mod affiliate_repo;
 pub mod errors;
 
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::time::Duration;
 
 
 #[derive(Clone)]

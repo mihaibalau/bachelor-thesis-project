@@ -2,7 +2,7 @@ use core::fmt;
 use std::str::FromStr;
 use crate::domain::errors::DomainError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TransactionType {
     Deposit,
     Withdrawal,
