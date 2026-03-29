@@ -73,6 +73,12 @@ add_executable(c
         db/transaction_repo.c
         db/include/affiliate_repo.h
         db/affiliate_repo.c
+        service/include/service_error.h
+        service/service_error.c
+        service/include/user_service.h
+        service/user_service.c
+        service/include/account_service.h
+        service/account_service.c
 )
 
 target_include_directories(c PRIVATE "${PG_INCLUDE_DIR}")
