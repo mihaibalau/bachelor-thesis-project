@@ -79,6 +79,10 @@ add_executable(c
         service/user_service.c
         service/include/account_service.h
         service/account_service.c
+        service/include/transaction_service.h
+        service/transaction_service.c
+        service/include/affiliate_service.h
+        service/affiliate_service.c
 )
 
 target_include_directories(c PRIVATE "${PG_INCLUDE_DIR}")
