@@ -1,21 +1,84 @@
+use std::{net::SocketAddr, sync::Arc};
+
+use anyhow::Context;
+use axum::Router;
+use sqlx::PgPool;
+use tracing_subscriber::EnvFilter;
+
 mod db;
 mod domain;
 mod service;
+mod server;
 
-use db::*;
+use crate::{
+    db::{
+        user_repo::UserRepo,
+        account_repo::AccountRepo,
+        transaction_repo::TransactionRepo,
+        affiliate_repo::AffiliateRepo,
+        Db,
+    },
+    server::{
+        router::create_router,
+        state::{AppState, UserSvc, AccountSvc, TxSvc, AffiliateSvc},
+    },
+    service::{user::UserService, account::AccountService, transaction::TransactionService, affiliate::AffiliateService},
+};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
+    // 1. Tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .init();
 
+    // 2. DB pool
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://mihai:admingentlix01@localhost:5432/gentlix_bank".to_string());
 
     let db = Db::new(&database_url).await?;
 
-    db.ping().await?;
-    println!("DB ping OK");
+    // 3. Repositories
+    let user_repo      = Arc::new(UserRepo::new(db.clone()));
+    let account_repo   = Arc::new(AccountRepo::new(db.clone()));
+    let tx_repo        = Arc::new(TransactionRepo::new(db.clone()));
+    let affiliate_repo = Arc::new(AffiliateRepo::new(db.clone()));
 
+    // 4. Services
+    let user_svc: Arc<UserSvc> = Arc::new(UserService::new(
+        user_repo.clone(),
+        account_repo.clone(),
+    ));
+    let account_svc: Arc<AccountSvc> = Arc::new(AccountService::new(
+        account_repo.clone(),
+    ));
+    let tx_svc: Arc<TxSvc> = Arc::new(TransactionService::new(
+        tx_repo.clone(),
+        account_repo.clone(),
+    ));
+    let affiliate_svc: Arc<AffiliateSvc> = Arc::new(AffiliateService::new(
+        affiliate_repo.clone(),
+        account_repo.clone(),
+    ));
 
+    // 5. AppState + router
+    let state = Arc::new(AppState::new(
+        user_svc,
+        account_svc,
+        tx_svc,
+        affiliate_svc,
+    ));
+    let app: Router = create_router(state);
+
+    // 6. Serve
+    let addr = SocketAddr::from(([0, 0, 0, 0], 6767));
+    tracing::info!("Listening on http://{}", addr);
+
+    axum::serve(
+        tokio::net::TcpListener::bind(addr).await?,
+        app,
+    )
+        .await?;
 
     Ok(())
 }

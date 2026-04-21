@@ -56,7 +56,7 @@ impl UserRepository for UserRepo {
 // (custom executors sharing state) and Rust Atomics & Locks (Arc and channels).
 
 use tokio::try_join;
-use crate::service::account::AccountRepository;
+pub(crate) use crate::service::account::AccountRepository;
 use crate::service::errors::{ServiceError, ServiceResult};
 
 /// Input DTO for registering a user at the service layer
