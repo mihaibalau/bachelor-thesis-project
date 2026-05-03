@@ -79,11 +79,23 @@ typedef struct AccountRepositoryVTable {
         Account ***out_accounts,
         size_t *out_count,
         RepoError *err);
+
+    bool (*exists_by_iban)(
+        void *ctx,
+        const char *iban_str,
+        bool *out_exists,
+        RepoError *err);
+
+    bool (*insert)(
+        void *ctx,
+        const Account *account,
+        AccountId *out_id,
+        RepoError *err);
 } AccountRepositoryVTable;
 
 typedef struct AccountRepository {
     const AccountRepositoryVTable *vtable;
-    void *ctx; /* concrete implementation, e.g. AccountRepo* */
+    void *ctx;
 } AccountRepository;
 
 /*
@@ -106,6 +118,15 @@ typedef struct RegisterUserCommand {
     const struct tm *birth_date_opt;  /* NULL or pointer */
     const char   *password_hash;      /* already hashed */
 } RegisterUserCommand;
+
+typedef struct {
+    const char *email;
+    const char *password;
+} LoginUserCommand;
+
+typedef struct {
+    UserId user_id;
+} LoginUserResult;
 
 typedef struct UserWithAccounts {
     User     *user;         /* owned by caller, must user_free */
@@ -130,6 +151,11 @@ bool user_service_register_user(UserService *svc,
                                 const RegisterUserCommand *cmd,
                                 UserId *out_user_id,
                                 ServiceError *err);
+
+bool user_service_login_user(UserService *svc,
+                             const LoginUserCommand *cmd,
+                             LoginUserResult *out,
+                             ServiceError *err);
 
 bool user_service_get_user_with_accounts(UserService *svc,
                                          UserId user_id,

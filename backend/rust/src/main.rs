@@ -27,6 +27,8 @@ use crate::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
     // 1. Tracing
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
@@ -62,11 +64,14 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     // 5. AppState + router
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+
     let state = Arc::new(AppState::new(
         user_svc,
         account_svc,
         tx_svc,
         affiliate_svc,
+        jwt_secret,
     ));
     let app: Router = create_router(state);
 

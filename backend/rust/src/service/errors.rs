@@ -42,6 +42,9 @@ pub enum ServiceError {
     #[error("concurrency error: {0}")]
     Concurrency(String),
 
+    #[error("forbidden")]
+    Forbidden,
+
     /// Catch-all for truly unexpected situations where we want
     /// to bubble up a rich error chain (e.g. via `anyhow`).
     ///

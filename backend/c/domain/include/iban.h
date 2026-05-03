@@ -12,5 +12,6 @@ typedef struct {
 
 const char *iban_as_cstr(const IBAN *iban);
 bool iban_try_create(const char *raw, IBAN *out, DomainError *err);
+bool iban_generate(IBAN *out, DomainError *err);
 
 #endif

@@ -23,3 +23,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 tower-http = { version = "0.6.8", features = ["cors", "trace"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing = "0.1.44"
+argon2 = { version = "0.5", features = ["std"] }
+rand = "0.8.5"
+jsonwebtoken = { version = "10.3.0", default-features = false, features = ["use_pem", "rust_crypto"] }
+dotenvy = "0.15.7"

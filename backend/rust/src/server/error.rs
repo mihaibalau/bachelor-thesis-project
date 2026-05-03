@@ -56,6 +56,11 @@ impl IntoResponse for ApiError {
                 "concurrency_error",
                 msg,
             ),
+            ServiceError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "access denied".to_string(),
+            ),
             ServiceError::Unexpected(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "unexpected_error",

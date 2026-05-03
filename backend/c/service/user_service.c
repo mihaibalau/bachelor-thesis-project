@@ -1,7 +1,8 @@
 #include "include/user_service.h"
 
 #include <stdlib.h>
-
+#include <string.h>
+#include <argon2.h>
 #include "account.h"
 #include "account_repo.h"
 #include "email.h"
@@ -85,23 +86,31 @@ UserRepository user_repository_from_user_repo(UserRepo *repo) {
 /* AccountRepo adapter (only list_for_user is needed by UserService) */
 
 static bool account_repo_list_for_user_adapter(
-    void *ctx,
-    UserId user_id,
-    Account ***out_accounts,
-    size_t *out_count,
-    RepoError *err
+    void *ctx, UserId user_id,
+    Account ***out_accounts, size_t *out_count, RepoError *err
 ) {
     return account_repo_list_for_user(
-        (AccountRepo *)ctx,
-        user_id,
-        out_accounts,
-        out_count,
-        err
-    );
+        (AccountRepo *)ctx, user_id, out_accounts, out_count, err);
+}
+
+static bool account_repo_exists_by_iban_adapter(
+    void *ctx, const char *iban_str, bool *out_exists, RepoError *err
+) {
+    return account_repo_exists_by_iban(
+        (AccountRepo *)ctx, iban_str, out_exists, err);
+}
+
+static bool account_repo_insert_adapter(
+    void *ctx, const Account *account, AccountId *out_id, RepoError *err
+) {
+    return account_repo_insert(
+        (AccountRepo *)ctx, account, out_id, err);
 }
 
 static const AccountRepositoryVTable ACCOUNT_REPO_VTABLE = {
-    account_repo_list_for_user_adapter
+    account_repo_list_for_user_adapter,
+    account_repo_exists_by_iban_adapter,
+    account_repo_insert_adapter
 };
 
 AccountRepository account_repository_from_account_repo(AccountRepo *repo) {
@@ -273,9 +282,123 @@ bool user_service_register_user(UserService *svc,
     }
 
     user_free(user);
+    *out_user_id = new_id;
+
+    /* 6. Create a default account with the new user account + IBAN for it */
+    IBAN default_iban;
+    bool iban_exists = false;
+
+    if (!iban_generate(&default_iban, &derr)) {
+        if (err) *err = service_error_from_domain(&derr);
+        return false;
+    }
+
+    for (;;) {
+        RepoError rerr_iban;
+        if (!svc->account_repo.vtable->exists_by_iban(
+                svc->account_repo.ctx,
+                default_iban.value,
+                &iban_exists,
+                &rerr_iban)) {
+            if (err) *err = service_error_from_repo(&rerr_iban);
+            return false;
+                }
+        if (!iban_exists) break;
+        if (!iban_generate(&default_iban, &derr)) {
+            if (err) *err = service_error_from_domain(&derr);
+            return false;
+        }
+    }
+
+    Account *default_account = account_create(
+        new_id,
+        ACCOUNT_TYPE_REGULAR,
+        CURRENCY_RON,
+        0,
+        &default_iban,
+        &derr
+    );
+    if (!default_account) {
+        if (err) *err = service_error_from_domain(&derr);
+        return false;
+    }
+
+    AccountId account_id;
+    RepoError rerr_acc2;
+    if (!svc->account_repo.vtable->insert(
+            svc->account_repo.ctx,
+            default_account,
+            &account_id,
+            &rerr_acc2)) {
+        account_free(default_account);
+        if (err) *err = service_error_from_repo(&rerr_acc2);
+        return false;
+            }
+
+    account_free(default_account);
 
     if (err) *err = service_error_ok();
-    *out_user_id = new_id;
+    return true;
+}
+
+bool user_service_login_user(UserService *svc,
+                             const LoginUserCommand *cmd,
+                             LoginUserResult *out,
+                             ServiceError *err) {
+    if (!svc || !cmd || !out) {
+        if (err) *err = service_error_validation("UserService::login_user: invalid arguments");
+        return false;
+    }
+
+    /* 1. Validate the email */
+    Email email;
+    DomainError derr;
+
+    if (!email_try_create(cmd->email, &email, &derr)) {
+        if (err) *err = service_error_validation("invalid credentials");
+        return false;
+    }
+
+    /* 2. Find the user by the email */
+    User *user = NULL;
+    RepoError rerr;
+
+    bool repo_ok = svc->user_repo.vtable->get_by_email(
+        svc->user_repo.ctx,
+        cmd->email,
+        &user,
+        &rerr
+    );
+
+    if (!repo_ok) {
+        if (user) {
+            user_free(user);
+        }
+        if (err) *err = service_error_validation("invalid credentials");
+        return false;
+    }
+
+    /* 3. Check the password */
+    const char *stored_hash = user_password_hash(user);
+
+    int rc = argon2id_verify(
+        stored_hash,
+        cmd->password,
+        (uint32_t)strlen(cmd->password)
+    );
+
+    if (rc != ARGON2_OK) {
+        user_free(user);
+        if (err) *err = service_error_validation("invalid credentials");
+        return false;
+    }
+
+    /* 4. Password match → return UserId. */
+    UserId uid = user_id(user);
+    user_free(user);
+
+    out->user_id = uid;
+    if (err) *err = service_error_ok();
     return true;
 }
 

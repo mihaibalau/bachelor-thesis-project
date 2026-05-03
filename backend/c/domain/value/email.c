@@ -59,6 +59,8 @@ bool email_try_create(const char *raw, Email *out, DomainError *err) {
         return false;
     }
 
+    *at = '@';
+
     strcpy(out->value, buffer);
     if (err) *err = domain_error_ok();
     return true;

@@ -1,4 +1,4 @@
-
+use tracing::debug;
 use crate::db::Db;
 use crate::db::errors::RepoError;
 use crate::domain::errors::DomainError;
@@ -90,6 +90,7 @@ impl UserRepo {
 
     pub async fn insert(&self, user: &User) -> Result<UserId, RepoError> {
 
+        debug!("inserting user into DB");
         if user.id().is_some() {
             return Err(RepoError::from(DomainError::validation(
                 "Cannot insert a User that already has an id",

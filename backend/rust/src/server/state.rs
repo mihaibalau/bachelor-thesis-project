@@ -25,6 +25,7 @@ pub struct AppState {
     pub account_svc: Arc<AccountSvc>,
     pub tx_svc: Arc<TxSvc>,
     pub affiliate_svc: Arc<AffiliateSvc>,
+    pub jwt_secret: String,
 }
 
 impl AppState {
@@ -33,12 +34,14 @@ impl AppState {
         account_svc: Arc<AccountSvc>,
         tx_svc: Arc<TxSvc>,
         affiliate_svc: Arc<AffiliateSvc>,
+        jwt_secret: String
     ) -> Self {
         Self {
             user_svc,
             account_svc,
             tx_svc,
             affiliate_svc,
+            jwt_secret,
         }
     }
 }

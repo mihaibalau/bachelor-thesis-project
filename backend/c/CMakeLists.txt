@@ -1,43 +1,75 @@
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.20)
 project(c C)
 
 set(CMAKE_C_STANDARD 17)
 
-# --- PostgreSQL / libpq ---
+# ── MSYS2 UCRT64 prefix ───────────────────────────────────────────────────────
+set(MSYS2_PREFIX "C:/msys64/ucrt64")
+list(APPEND CMAKE_PREFIX_PATH "${MSYS2_PREFIX}")
+
+# ── PostgreSQL / libpq ────────────────────────────────────────────────────────
 find_program(PG_CONFIG pg_config
         HINTS
-        "C:/msys64/ucrt64/bin"
+        "${MSYS2_PREFIX}/bin"
         "C:/Program Files/PostgreSQL/16/bin"
         "C:/Program Files/PostgreSQL/15/bin"
 )
-
 if(NOT PG_CONFIG)
     message(FATAL_ERROR "pg_config not found. Install: pacman -S mingw-w64-ucrt-x86_64-postgresql")
 endif()
 
-execute_process(
-        COMMAND ${PG_CONFIG} --includedir
-        OUTPUT_VARIABLE PG_INCLUDE_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-execute_process(
-        COMMAND ${PG_CONFIG} --libdir
-        OUTPUT_VARIABLE PG_LIB_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+execute_process(COMMAND ${PG_CONFIG} --includedir
+        OUTPUT_VARIABLE PG_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND ${PG_CONFIG} --libdir
+        OUTPUT_VARIABLE PG_LIB_DIR    OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 message(STATUS "PostgreSQL include dir: ${PG_INCLUDE_DIR}")
 message(STATUS "PostgreSQL lib dir:     ${PG_LIB_DIR}")
 
-include_directories(
-        ${CMAKE_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/domain/include
-        ${CMAKE_SOURCE_DIR}/db/include
-        ${CMAKE_SOURCE_DIR}/util/include
+# ── libmicrohttpd ─────────────────────────────────────────────────────────────
+find_library(LIBMICROHTTPD
+        NAMES microhttpd libmicrohttpd
+        HINTS "${MSYS2_PREFIX}/lib"
+        REQUIRED
 )
 
+# ── jansson ───────────────────────────────────────────────────────────────────
+find_library(LIBJANSSON
+        NAMES jansson libjansson
+        HINTS "${MSYS2_PREFIX}/lib"
+        REQUIRED
+)
+
+# ── OpenSSL (FOR jwt_utils.c — HMAC-SHA256 + base64) ──────────────────────
+find_library(LIBSSL
+        NAMES ssl libssl
+        HINTS "${MSYS2_PREFIX}/lib"
+        REQUIRED
+)
+find_library(LIBCRYPTO
+        NAMES crypto libcrypto
+        HINTS "${MSYS2_PREFIX}/lib"
+        REQUIRED
+)
+
+# ── Argon2 ────────────────────────────────────────────────────────────────────
+find_library(LIBARGON2
+        NAMES argon2 libargon2
+        HINTS "${MSYS2_PREFIX}/lib"
+        REQUIRED
+)
+
+message(STATUS "libargon2:     ${LIBARGON2}")
+message(STATUS "libmicrohttpd: ${LIBMICROHTTPD}")
+message(STATUS "libjansson:    ${LIBJANSSON}")
+message(STATUS "libssl:        ${LIBSSL}")
+message(STATUS "libcrypto:     ${LIBCRYPTO}")
+
+# ── Executable ────────────────────────────────────────────────────────────────
 add_executable(c
         main.c
+
+        # domain
         domain/error.c
         domain/include/error.h
         domain/include/ids.h
@@ -59,12 +91,12 @@ add_executable(c
         domain/transaction.c
         domain/include/user.h
         domain/user.c
+
+        # db
         db/include/repo_error.h
         db/repo_error.c
         db/include/db.h
         db/db.c
-        util/include/util_str.h
-        util/util_str.c
         db/account_repo.c
         db/include/account_repo.h
         db/include/user_repo.h
@@ -73,6 +105,12 @@ add_executable(c
         db/transaction_repo.c
         db/include/affiliate_repo.h
         db/affiliate_repo.c
+
+        # util
+        util/include/util_str.h
+        util/util_str.c
+
+        # service
         service/include/service_error.h
         service/service_error.c
         service/include/user_service.h
@@ -83,8 +121,46 @@ add_executable(c
         service/transaction_service.c
         service/include/affiliate_service.h
         service/affiliate_service.c
+
+        # server
+        server/http_state.c
+        server/include/http_state.h
+        server/http_error.c
+        server/include/http_error.h
+        server/http_auth.c
+        server/include/http_auth.h
+        server/http_users.c
+        server/include/http_users.h
+        server/http_router.c
+        server/include/http_router.h
+        server/http_server.c
+        server/include/http_server.h
+        server/jwt_utils.c
+        server/include/jwt_utils.h
+        server/include/jwt_utils.h
+        server/jwt_utils.c
 )
 
-target_include_directories(c PRIVATE "${PG_INCLUDE_DIR}")
+# ── Include directories ───────────────────────────────────────────────────────
+target_include_directories(c PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/domain/include
+        ${CMAKE_SOURCE_DIR}/db/include
+        ${CMAKE_SOURCE_DIR}/util/include
+        ${CMAKE_SOURCE_DIR}/service/include
+        ${CMAKE_SOURCE_DIR}/server/include
+        "${MSYS2_PREFIX}/include"
+        "${PG_INCLUDE_DIR}"
+)
+
+# ── Link ──────────────────────────────────────────────────────────────────────
 target_link_directories(c PRIVATE "${PG_LIB_DIR}")
-target_link_libraries(c PRIVATE pq)
+
+target_link_libraries(c PRIVATE
+        ${LIBMICROHTTPD}
+        ${LIBJANSSON}
+        ${LIBSSL}
+        ${LIBCRYPTO}
+        ${LIBARGON2}
+        pq
+)

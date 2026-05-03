@@ -79,13 +79,10 @@ where
         user_id: UserId,
         account_type: AccountType,
         currency: Currency,
-        initial_balance_cents: i64,
-        iban_str: String
+        initial_balance_cents: i64
     ) -> ServiceResult<AccountId> {
-        // 1. Parse IBAN using the domain type.
-        let iban: IBAN = iban_str.parse().map_err(ServiceError::Domain)?;
 
-        // 2. Enforce at-most-one account of a given type for this user.
+        // 1. Enforce at-most-one account of a given type for this user
         if self.repo.exists_by_account_type(user_id, account_type).await? {
             return Err(ServiceError::conflict(
                 "account",
@@ -97,15 +94,13 @@ where
             ));
         }
 
-        // 3. Enforce global IBAN uniqueness.
-        if self.repo.exists_by_iban(iban.as_str()).await? {
-            return Err(ServiceError::conflict(
-                "account",
-                format!("IBAN '{}' is already in use", iban.as_str()),
-            ));
+        // 2. Generate unique IBAN for the new account
+        let mut iban = IBAN::generate()?;
+        while self.repo.exists_by_iban(iban.as_str()).await? {
+            let iban = IBAN::generate()?;
         }
 
-        // 4. Build the domain `Account`
+        // 3. Build the domain `Account`
         // Following the same "rehydrate vs constructors" pattern as your repos
         // (see TryFrom<AccountRow>), here we use a dedicated constructor for
         // new accounts

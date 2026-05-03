@@ -1,3 +1,4 @@
+use tracing::debug;
 use crate::db::Db;
 use crate::db::errors::RepoError;
 use crate::domain::account::Account;
@@ -172,13 +173,12 @@ impl AccountRepo {
                     FROM accounts
                     WHERE iban = $1
                 )
-            "#,
-            iban
-        )
-            .fetch_optional(self.db.pool())
+                    as "exists!: bool""#, iban
+            )
+            .fetch_one(self.db.pool())
             .await?;
 
-        Ok(rec.is_some())
+        Ok(rec.exists)
     }
 
     pub async fn exists_by_account_type(&self, user_id: UserId, account_type: AccountType) -> Result<bool, RepoError> {
