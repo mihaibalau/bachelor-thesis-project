@@ -260,6 +260,7 @@ static enum MHD_Result handle_login(
 
     if (!jwt_encode_user_id(state->jwt_secret,
                             result.user_id.value,
+                            result.tag,
                             token,
                             sizeof token,
                             &jwt_err)) {

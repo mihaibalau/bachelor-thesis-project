@@ -395,6 +395,10 @@ bool user_service_login_user(UserService *svc,
 
     /* 4. Password match → return UserId. */
     UserId uid = user_id(user);
+
+    strncpy(out->tag, user_tag(user), sizeof(out->tag) - 1);
+    out->tag[sizeof(out->tag) - 1] = '\0';
+
     user_free(user);
 
     out->user_id = uid;

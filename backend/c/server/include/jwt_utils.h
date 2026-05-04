@@ -16,6 +16,7 @@ bool jwt_decode_user_id(
 bool jwt_encode_user_id(
     const char *secret,
     int64_t user_id,
+    const char *tag,
     char *out_token,
     size_t out_token_size,
     ServiceError *err

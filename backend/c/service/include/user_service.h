@@ -126,6 +126,7 @@ typedef struct {
 
 typedef struct {
     UserId user_id;
+    char tag[64];
 } LoginUserResult;
 
 typedef struct UserWithAccounts {

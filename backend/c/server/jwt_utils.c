@@ -219,6 +219,7 @@ bool jwt_decode_user_id(
 bool jwt_encode_user_id(
     const char *secret,
     int64_t user_id,
+    const char *tag,
     char *out_token,
     size_t out_token_size,
     ServiceError *err
@@ -234,10 +235,12 @@ bool jwt_encode_user_id(
 
     /* Payload: {"sub": user_id, "exp": now+3600} */
     time_t exp = time(NULL) + 3600;
-    char payload_json[128];
+    char payload_json[256];
     snprintf(payload_json, sizeof payload_json,
-             "{\"sub\":%lld,\"exp\":%lld}",
-             (long long)user_id, (long long)exp);
+             "{\"sub\":%lld,\"tag\":\"%s\",\"exp\":%lld}",
+             (long long)user_id,
+             tag ? tag : "",
+             (long long)exp);
 
     char *payload_b64 = b64url_encode(
         (const unsigned char *)payload_json, strlen(payload_json));
