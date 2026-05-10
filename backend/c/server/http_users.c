@@ -65,6 +65,13 @@ static bool body_buffer_append(BodyBuffer *bb, const char *data, size_t size) {
 
 /* ── JSON / error helpers ────────────────────────────────────────────────── */
 
+static void add_cors_headers(struct MHD_Response *res) {
+    MHD_add_response_header(res, "Access-Control-Allow-Origin", "http://localhost:5173");
+    MHD_add_response_header(res, "Access-Control-Allow-Headers", "Content-Type, Authorization");
+    MHD_add_response_header(res, "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    MHD_add_response_header(res, "Access-Control-Max-Age", "86400");
+}
+
 static enum MHD_Result send_json_response(
     struct MHD_Connection *conn,
     int status_code,
@@ -72,8 +79,28 @@ static enum MHD_Result send_json_response(
 ) {
     struct MHD_Response *res = MHD_create_response_from_buffer(
         strlen(json), (void *)json, MHD_RESPMEM_MUST_COPY);
+
     if (!res) return MHD_NO;
+
     MHD_add_response_header(res, "Content-Type", "application/json");
+    add_cors_headers(res);
+
+    enum MHD_Result ret = MHD_queue_response(conn, (unsigned int)status_code, res);
+    MHD_destroy_response(res);
+    return ret;
+}
+
+static enum MHD_Result send_empty_response(
+    struct MHD_Connection *conn,
+    int status_code
+) {
+    struct MHD_Response *res = MHD_create_response_from_buffer(
+        0, (void *)"", MHD_RESPMEM_PERSISTENT);
+
+    if (!res) return MHD_NO;
+
+    add_cors_headers(res);
+
     enum MHD_Result ret = MHD_queue_response(conn, (unsigned int)status_code, res);
     MHD_destroy_response(res);
     return ret;
@@ -293,6 +320,11 @@ enum MHD_Result http_users_dispatch(
     size_t *upload_data_size,
     void **con_cls
 ) {
+
+    if (strcmp(method, MHD_HTTP_METHOD_OPTIONS) == 0) {
+        return send_empty_response(conn, MHD_HTTP_NO_CONTENT);
+    }
+
     /* GET /api/users/{id} — without body*/
     if (strcmp(method, MHD_HTTP_METHOD_GET) == 0) {
         if (subpath && subpath[0] == '/' && subpath[1] != '\0') {
