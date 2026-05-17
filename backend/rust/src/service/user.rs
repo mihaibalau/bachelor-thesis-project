@@ -291,4 +291,21 @@ where
         self.user_repo.delete(user_id).await?;
         Ok(())
     }
+
+    pub async fn get_user(&self, user_id: UserId) -> ServiceResult<User> {
+        self.user_repo
+            .get_by_id(user_id)
+            .await
+            .map_err(ServiceError::from)
+    }
+
+    pub async fn find_by_tag(&self, identifier: &str) -> ServiceResult<User> {
+        match self.user_repo.get_by_tag(identifier).await {
+            Ok(u) => Ok(u),
+            Err(RepoError::NotFound(_)) => Err(ServiceError::Validation(
+                "user not found".into(),
+            )),
+            Err(e) => Err(ServiceError::from(e)),
+        }
+    }
 }

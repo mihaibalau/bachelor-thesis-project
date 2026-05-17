@@ -136,4 +136,20 @@ where
             .await?;
         Ok(())
     }
+
+    pub async fn get(
+        &self,
+        owner_user_id: UserId,
+        recipient_sub_account_id: AccountId,
+    ) -> ServiceResult<Affiliate> {
+        match self
+            .affiliate_repo
+            .get(owner_user_id, recipient_sub_account_id)
+            .await
+        {
+            Ok(a) => Ok(a),
+            Err(RepoError::NotFound(_)) => Err(ServiceError::not_found("affiliate")),
+            Err(e) => Err(ServiceError::from(e)),
+        }
+    }
 }

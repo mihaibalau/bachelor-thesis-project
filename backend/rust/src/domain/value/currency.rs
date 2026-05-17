@@ -18,6 +18,10 @@ impl Currency {
             Currency::Usd => "USD",
         }
     }
+
+    pub fn all() -> &'static [Currency] {
+        &[Currency::Ron, Currency::Eur, Currency::Usd]
+    }
 }
 
 impl fmt::Display for Currency {

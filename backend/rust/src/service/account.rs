@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use async_trait::async_trait;
 use crate::db::account_repo::AccountRepo;
@@ -24,6 +25,7 @@ pub trait AccountRepository: Send + Sync {
     async fn exists_by_iban(&self, iban: &str) -> Result<bool, RepoError>;
     async fn get_by_id(&self, account_id: AccountId) -> Result<Account, RepoError>;
     async fn insert(&self, account: &Account) -> Result<AccountId, RepoError>;
+    async fn list_type_currency_pairs(&self, user_id: UserId) -> Result<Vec<(AccountType, Currency)>, RepoError>;
 }
 
 /// Thin adapter: your concrete SQLx repo implements the trait
@@ -55,6 +57,10 @@ impl AccountRepository for AccountRepo {
     async fn insert(&self, account: &Account) -> Result<AccountId, RepoError> {
         self.insert(account).await
     }
+
+    async fn list_type_currency_pairs(&self, user_id: UserId) -> Result<Vec<(AccountType, Currency)>, RepoError> {
+        self.list_type_currency_pairs(user_id).await
+    }
 }
 
 /// Service responsible for account lifecycle and balance-heavy operations
@@ -64,6 +70,10 @@ where
     R: AccountRepository,
 {
     repo: Arc<R>,
+}
+
+pub struct AccountAvailability {
+    pub available: HashMap<AccountType, Vec<Currency>>,
 }
 
 impl<R> AccountService<R>
@@ -97,7 +107,7 @@ where
         // 2. Generate unique IBAN for the new account
         let mut iban = IBAN::generate()?;
         while self.repo.exists_by_iban(iban.as_str()).await? {
-            let iban = IBAN::generate()?;
+            iban = IBAN::generate()?;
         }
 
         // 3. Build the domain `Account`
@@ -123,5 +133,40 @@ where
             Err(RepoError::NotFound(_)) => Err(ServiceError::not_found("account")),
             Err(e) => Err(ServiceError::from(e))
          }
+    }
+
+    pub async fn get_account_availability(
+        &self,
+        user_id: UserId,
+    ) -> ServiceResult<AccountAvailability> {
+
+        let all_types = AccountType::all();
+        let all_currencies = Currency::all();
+
+        let existing: HashSet<(AccountType, Currency)> = self
+            .repo
+            .list_type_currency_pairs(user_id)
+            .await?
+            .into_iter()
+            .collect();
+
+        let mut available = HashMap::new();
+        for &account_type in all_types {
+            let free_currencies: Vec<Currency> = all_currencies
+                .iter()
+                .filter(|&&c| !existing.contains(&(account_type, c)))
+                .copied()
+                .collect();
+            available.insert(account_type, free_currencies);
+        }
+
+        Ok(AccountAvailability { available })
+    }
+
+    pub async fn list_for_user(&self, user_id: UserId) -> ServiceResult<Vec<Account>> {
+        self.repo
+            .list_for_user(user_id)
+            .await
+            .map_err(ServiceError::from)
     }
 }

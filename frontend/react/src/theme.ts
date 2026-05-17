@@ -1,12 +1,19 @@
 import { createTheme } from '@mui/material/styles';
+import type { PaletteMode, ThemeOptions } from '@mui/material';
 
-export const theme = createTheme({
+const getDesignTokens = (mode: PaletteMode): ThemeOptions => ({
     palette: {
-        mode: 'dark',
-        background: {
-            default: '#050509',
-            paper: '#101018',
-        },
+        mode,
+        background:
+            mode === 'dark'
+                ? {
+                    default: '#050509',
+                    paper: '#101018',
+                }
+                : {
+                    default: '#f3f4f6',
+                    paper: '#ffffff',
+                },
         primary: {
             main: '#f5c451',
             light: '#ffe29f',
@@ -15,10 +22,16 @@ export const theme = createTheme({
         secondary: {
             main: '#38bdf8',
         },
-        text: {
-            primary: '#f9fafb',
-            secondary: '#9ca3af',
-        },
+        text:
+            mode === 'dark'
+                ? {
+                    primary: '#f9fafb',
+                    secondary: '#9ca3af',
+                }
+                : {
+                    primary: '#020617',
+                    secondary: '#6b7280',
+                },
         divider: 'rgba(148, 163, 184, 0.4)',
     },
     typography: {
@@ -39,14 +52,14 @@ export const theme = createTheme({
         },
     },
     shape: {
-        borderRadius: 16,
+        borderRadius: 10, // base – folosit de multe componente
     },
     components: {
         MuiPaper: {
             styleOverrides: {
                 root: {
                     backgroundImage: 'none',
-                    borderRadius: 20,
+                    borderRadius: 14,
                     border: '1px solid rgba(148, 163, 184, 0.3)',
                     boxShadow:
                         '0 18px 45px rgba(0,0,0,0.55), 0 0 0 1px rgba(15,23,42,0.8)',
@@ -60,9 +73,9 @@ export const theme = createTheme({
             },
             styleOverrides: {
                 root: {
-                    borderRadius: 999,
-                    paddingInline: 24,
-                    paddingBlock: 10,
+                    borderRadius: 10,
+                    paddingInline: 20,
+                    paddingBlock: 9,
                     boxShadow:
                         '0 10px 25px rgba(0,0,0,0.45), 0 0 0 1px rgba(161, 98, 7, 0.6)',
                 },
@@ -90,8 +103,11 @@ export const theme = createTheme({
             styleOverrides: {
                 root: {
                     '& .MuiOutlinedInput-root': {
-                        borderRadius: 999,
-                        backgroundColor: 'rgba(15,23,42,0.85)',
+                        borderRadius: 12,
+                        backgroundColor:
+                            mode === 'dark'
+                                ? 'rgba(15,23,42,0.85)'
+                                : '#f9fafb',
                         '& fieldset': {
                             borderColor: 'rgba(148,163,184,0.4)',
                         },
@@ -111,3 +127,6 @@ export const theme = createTheme({
         },
     },
 });
+
+export const createAppTheme = (mode: PaletteMode) =>
+    createTheme(getDesignTokens(mode));

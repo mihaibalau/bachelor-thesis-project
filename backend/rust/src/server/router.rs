@@ -12,8 +12,8 @@ use crate::{
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/users",        routes::users::router(state.clone()))
-        // .nest("/api/accounts",     routes::accounts::router())
-        // .nest("/api/transactions", routes::transactions::router())
+        .nest("/api/accounts",     routes::accounts::router(state.clone()))
+        .nest("/api/affiliates",   routes::affiliates::router(state.clone()))
         // .nest("/api/affiliates",   routes::affiliates::router())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

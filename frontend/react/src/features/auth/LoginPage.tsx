@@ -14,13 +14,17 @@ import {
     TextField,
     Typography,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
+import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
+import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import type { MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import gentlixLogo from '../../assets/logo.png'; // adjust path/extension
+import { useColorMode } from '../theme/useColorMode';
+import gentlixLogo from '../../assets/logo.png';
 
 const LoginSchema = z.object({
     email: z.string().email('Please enter a valid email address'),
@@ -34,6 +38,9 @@ export function LoginPage() {
     const navigate = useNavigate();
     const [serverError, setServerError] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
+    const { mode, toggleMode } = useColorMode();
+    const theme = useTheme();
+    const isDark = theme.palette.mode === 'dark';
 
     const {
         register,
@@ -68,18 +75,56 @@ export function LoginPage() {
         setShowPassword((prev) => !prev);
     };
 
+    const loginBackground = isDark
+        ? 'radial-gradient(circle at 0% 0%, rgba(245,196,81,0.16), transparent 55%), radial-gradient(circle at 100% 0%, rgba(56,189,248,0.26), transparent 55%), linear-gradient(145deg, #050509 0%, #050814 45%, #040612 100%)'
+        : `linear-gradient(145deg,
+            ${theme.palette.background.default} 0%,
+            ${theme.palette.grey['100']} 35%,
+            ${alpha(theme.palette.primary.light, 0.35)} 70%,
+            ${alpha(theme.palette.secondary.light, 0.22)} 100%)`;
+
     return (
         <Box
             sx={{
+                position: 'relative',
                 minHeight: '100vh',
                 display: 'flex',
                 alignItems: 'stretch',
                 justifyContent: 'center',
                 bgcolor: 'background.default',
-                background:
-                    'radial-gradient(circle at 0% 0%, rgba(245,196,81,0.16), transparent 55%), radial-gradient(circle at 100% 0%, rgba(56,189,248,0.26), transparent 55%), linear-gradient(145deg, #050509 0%, #050814 45%, #040612 100%)',
+                background: loginBackground,
+                transition: 'background 200ms ease',
             }}
         >
+            <IconButton
+                onClick={toggleMode}
+                color="inherit"
+                sx={{
+                    position: 'absolute',
+                    top: { xs: 12, md: 16 },
+                    right: { xs: 12, md: 24 },
+                    borderRadius: 10,
+                    bgcolor: isDark
+                        ? 'rgba(15,23,42,0.85)'
+                        : 'rgba(255,255,255,0.9)',
+                    border: '1px solid rgba(148,163,184,0.6)',
+                    boxShadow: '0 10px 25px rgba(0,0,0,0.35)',
+                    zIndex: 2,
+                    '&:hover': {
+                        borderColor: theme.palette.primary.main,
+                        bgcolor: isDark
+                            ? 'rgba(15,23,42,0.98)'
+                            : 'rgba(249,250,251,1)',
+                    },
+                }}
+            >
+                {mode === 'dark' ? (
+                    <LightModeOutlinedIcon fontSize="small" />
+                ) : (
+                    <DarkModeOutlinedIcon fontSize="small" />
+                )}
+            </IconButton>
+
             <Container
                 maxWidth="lg"
                 sx={{
@@ -98,7 +143,6 @@ export function LoginPage() {
                         alignItems: 'stretch',
                     }}
                 >
-                    {/* Left side – brand + copy */}
                     <Box
                         sx={{
                             display: 'flex',
@@ -107,7 +151,13 @@ export function LoginPage() {
                         }}
                     >
                         <Box sx={{ mb: 4 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    mb: 3,
+                                }}
+                            >
                                 <Box
                                     component="img"
                                     src={gentlixLogo}
@@ -153,10 +203,19 @@ export function LoginPage() {
                             </Typography>
                         </Box>
 
-                        <Box sx={{ display: { xs: 'none', md: 'flex' }, flexDirection: 'column', gap: 1 }}>
+                        <Box
+                            sx={{
+                                display: { xs: 'none', md: 'flex' },
+                                flexDirection: 'column',
+                                gap: 1,
+                            }}
+                        >
                             <Typography
                                 variant="caption"
-                                sx={{ textTransform: 'uppercase', letterSpacing: 1.6 }}
+                                sx={{
+                                    textTransform: 'uppercase',
+                                    letterSpacing: 1.6,
+                                }}
                                 color="text.secondary"
                             >
                                 security & compliance
@@ -171,11 +230,18 @@ export function LoginPage() {
                     <Paper
                         sx={{
                             p: { xs: 3, md: 4 },
-                            bgcolor: 'rgba(15,23,42,0.92)',
+                            bgcolor: 'background.paper',
                             backdropFilter: 'blur(24px)',
+                            border: '1px solid',
+                            borderColor: isDark
+                                ? 'rgba(30,41,59,0.9)'
+                                : 'rgba(203,213,225,0.8)',
                         }}
                     >
-                        <Typography variant="h5" sx={{ mb: 1.5, fontWeight: 600 }}>
+                        <Typography
+                            variant="h5"
+                            sx={{ mb: 1.5, fontWeight: 600 }}
+                        >
                             Sign in to Gentlix
                         </Typography>
                         <Typography
@@ -195,7 +261,11 @@ export function LoginPage() {
                             component="form"
                             noValidate
                             onSubmit={handleSubmit(onSubmit)}
-                            sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+                            sx={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 2,
+                            }}
                         >
                             <TextField
                                 label="Email address"
@@ -242,16 +312,18 @@ export function LoginPage() {
                                     alignItems: 'center',
                                     mt: 0.5,
                                 }}
-                            >
-
-                            </Box>
+                            />
 
                             <Button
                                 type="submit"
                                 variant="contained"
                                 fullWidth
                                 disabled={isSubmitting}
-                                endIcon={!isSubmitting ? <ArrowForwardRoundedIcon /> : undefined}
+                                endIcon={
+                                    !isSubmitting ? (
+                                        <ArrowForwardRoundedIcon />
+                                    ) : undefined
+                                }
                                 sx={{ mt: 1 }}
                             >
                                 {isSubmitting ? 'Signing in…' : 'Sign in'}
@@ -265,7 +337,10 @@ export function LoginPage() {
                             >
                                 <Typography
                                     variant="caption"
-                                    sx={{ color: 'text.secondary', textTransform: 'uppercase' }}
+                                    sx={{
+                                        color: 'text.secondary',
+                                        textTransform: 'uppercase',
+                                    }}
                                 >
                                     Or
                                 </Typography>

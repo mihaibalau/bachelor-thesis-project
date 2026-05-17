@@ -198,6 +198,32 @@ impl AccountRepo {
 
         Ok(rec.is_some())
     }
+
+    pub async fn list_type_currency_pairs(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<(AccountType, Currency)>, RepoError> {
+        let rows = sqlx::query!(
+        r#"
+            SELECT account_type, currency
+            FROM accounts
+            WHERE user_id = $1
+        "#,
+        user_id.0
+    )
+            .fetch_all(self.db.pool())
+            .await?;
+
+        let mut pairs = Vec::with_capacity(rows.len());
+        for row in rows {
+            let account_type: AccountType = row.account_type.parse()
+                .map_err(|_| RepoError::from(DomainError::validation("invalid account_type in db")))?;
+            let currency: Currency = row.currency.parse()
+                .map_err(|_| RepoError::from(DomainError::validation("invalid currency in db")))?;
+            pairs.push((account_type, currency));
+        }
+        Ok(pairs)
+    }
 }
 
 impl TryFrom<AccountRow> for Account {

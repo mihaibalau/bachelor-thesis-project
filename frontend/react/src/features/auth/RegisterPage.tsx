@@ -1,4 +1,3 @@
-// src/features/auth/RegisterPage.tsx
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -15,16 +14,20 @@ import {
     TextField,
     Typography,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import CalendarMonthOutlinedIcon from '@mui/icons-material/CalendarMonthOutlined';
 import PersonOutlineOutlinedIcon from '@mui/icons-material/PersonOutlineOutlined';
 import TagOutlinedIcon from '@mui/icons-material/TagOutlined';
 import PhoneIphoneOutlinedIcon from '@mui/icons-material/PhoneIphoneOutlined';
 import MailOutlineOutlinedIcon from '@mui/icons-material/MailOutlineOutlined';
+import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
+import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import type { MouseEvent } from 'react';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { useNavigate } from 'react-router-dom';
+import { useColorMode } from '../theme/useColorMode';
 import gentlixLogo from '../../assets/logo.png';
 
 // Zod schema matching backend payload
@@ -55,6 +58,9 @@ export function RegisterPage() {
     const [serverError, setServerError] = useState<string | null>(null);
     const [serverSuccess, setServerSuccess] = useState<string | null>(null);
     const [showPassword, setShowPassword] = useState(false);
+    const { mode, toggleMode } = useColorMode();
+    const theme = useTheme();
+    const isDark = theme.palette.mode === 'dark';
 
     const {
         register,
@@ -62,7 +68,7 @@ export function RegisterPage() {
         formState: { errors, isSubmitting },
     } = useForm<RegisterFormValues>({
         resolver: zodResolver(RegisterSchema),
-        mode: 'onBlur',        // validate when leaving a field
+        mode: 'onBlur', // validate when leaving a field
         reValidateMode: 'onBlur',
         defaultValues: {
             tag: '',
@@ -93,7 +99,9 @@ export function RegisterPage() {
                 throw new Error(text || 'Registration failed.');
             }
 
-            setServerSuccess('Account created successfully. You can now sign in.');
+            setServerSuccess(
+                'Account created successfully. You can now sign in.',
+            );
             // small delay so the user sees the message, then go to login
             setTimeout(() => {
                 navigate('/login');
@@ -113,18 +121,57 @@ export function RegisterPage() {
         setShowPassword((prev) => !prev);
     };
 
+    const registerBackground = isDark
+        ? 'radial-gradient(circle at 0% 0%, rgba(245,196,81,0.16), transparent 55%), radial-gradient(circle at 100% 0%, rgba(56,189,248,0.26), transparent 55%), linear-gradient(145deg, #050509 0%, #050814 45%, #040612 100%)'
+        : `linear-gradient(145deg,
+            ${theme.palette.background.default} 0%,
+            ${theme.palette.grey['100']} 35%,
+            ${alpha(theme.palette.primary.light, 0.35)} 70%,
+            ${alpha(theme.palette.secondary.light, 0.22)} 100%)`;
+
     return (
         <Box
             sx={{
+                position: 'relative',
                 minHeight: '100vh',
                 display: 'flex',
                 alignItems: 'stretch',
                 justifyContent: 'center',
                 bgcolor: 'background.default',
-                background:
-                    'radial-gradient(circle at 0% 0%, rgba(245,196,81,0.16), transparent 55%), radial-gradient(circle at 100% 0%, rgba(56,189,248,0.26), transparent 55%), linear-gradient(145deg, #050509 0%, #050814 45%, #040612 100%)',
+                background: registerBackground,
+                transition: 'background 200ms ease',
             }}
         >
+            {/* Toggle sus dreapta */}
+            <IconButton
+                onClick={toggleMode}
+                color="inherit"
+                sx={{
+                    position: 'absolute',
+                    top: { xs: 12, md: 16 },
+                    right: { xs: 12, md: 24 },
+                    borderRadius: 10,
+                    bgcolor: isDark
+                        ? 'rgba(15,23,42,0.85)'
+                        : 'rgba(255,255,255,0.9)',
+                    border: '1px solid rgba(148,163,184,0.6)',
+                    boxShadow: '0 10px 25px rgba(0,0,0,0.35)',
+                    zIndex: 2,
+                    '&:hover': {
+                        borderColor: theme.palette.primary.main,
+                        bgcolor: isDark
+                            ? 'rgba(15,23,42,0.98)'
+                            : 'rgba(249,250,251,1)',
+                    },
+                }}
+            >
+                {mode === 'dark' ? (
+                    <LightModeOutlinedIcon fontSize="small" />
+                ) : (
+                    <DarkModeOutlinedIcon fontSize="small" />
+                )}
+            </IconButton>
+
             <Container
                 maxWidth="lg"
                 sx={{
@@ -152,7 +199,13 @@ export function RegisterPage() {
                         }}
                     >
                         <Box sx={{ mb: 4 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    mb: 3,
+                                }}
+                            >
                                 <Box
                                     component="img"
                                     src={gentlixLogo}
@@ -207,7 +260,10 @@ export function RegisterPage() {
                         >
                             <Typography
                                 variant="caption"
-                                sx={{ textTransform: 'uppercase', letterSpacing: 1.6 }}
+                                sx={{
+                                    textTransform: 'uppercase',
+                                    letterSpacing: 1.6,
+                                }}
                                 color="text.secondary"
                             >
                                 account features
@@ -223,11 +279,18 @@ export function RegisterPage() {
                     <Paper
                         sx={{
                             p: { xs: 3, md: 4 },
-                            bgcolor: 'rgba(15,23,42,0.92)',
+                            bgcolor: 'background.paper',
                             backdropFilter: 'blur(24px)',
+                            border: '1px solid',
+                            borderColor: isDark
+                                ? 'rgba(30,41,59,0.9)'
+                                : 'rgba(203,213,225,0.8)',
                         }}
                     >
-                        <Typography variant="h5" sx={{ mb: 1.5, fontWeight: 600 }}>
+                        <Typography
+                            variant="h5"
+                            sx={{ mb: 1.5, fontWeight: 600 }}
+                        >
                             Create your Gentlix account
                         </Typography>
                         <Typography
@@ -297,7 +360,10 @@ export function RegisterPage() {
                             <Box
                                 sx={{
                                     display: 'grid',
-                                    gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+                                    gridTemplateColumns: {
+                                        xs: '1fr',
+                                        sm: '1fr 1fr',
+                                    },
                                     gap: 2,
                                 }}
                             >
@@ -330,7 +396,10 @@ export function RegisterPage() {
                             <Box
                                 sx={{
                                     display: 'grid',
-                                    gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+                                    gridTemplateColumns: {
+                                        xs: '1fr',
+                                        sm: '1fr 1fr',
+                                    },
                                     gap: 2,
                                 }}
                             >
@@ -403,10 +472,16 @@ export function RegisterPage() {
                                 variant="contained"
                                 fullWidth
                                 disabled={isSubmitting}
-                                endIcon={!isSubmitting ? <ArrowForwardRoundedIcon /> : undefined}
+                                endIcon={
+                                    !isSubmitting ? (
+                                        <ArrowForwardRoundedIcon />
+                                    ) : undefined
+                                }
                                 sx={{ mt: 1 }}
                             >
-                                {isSubmitting ? 'Creating account…' : 'Create account'}
+                                {isSubmitting
+                                    ? 'Creating account…'
+                                    : 'Create account'}
                             </Button>
 
                             <Divider
@@ -417,7 +492,10 @@ export function RegisterPage() {
                             >
                                 <Typography
                                     variant="caption"
-                                    sx={{ color: 'text.secondary', textTransform: 'uppercase' }}
+                                    sx={{
+                                        color: 'text.secondary',
+                                        textTransform: 'uppercase',
+                                    }}
                                 >
                                     Already registered?
                                 </Typography>

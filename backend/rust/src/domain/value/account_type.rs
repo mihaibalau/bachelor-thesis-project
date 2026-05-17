@@ -18,6 +18,10 @@ impl AccountType {
             AccountType::Regular => "Regular",
         }
     }
+
+    pub fn all() -> &'static [AccountType] {
+        &[AccountType::Savings, AccountType::Credit, AccountType::Regular]
+    }
 }
 
 impl fmt::Display for AccountType {
