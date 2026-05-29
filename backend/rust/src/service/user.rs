@@ -61,8 +61,7 @@ impl UserRepository for UserRepo {
 // (custom executors sharing state) and Rust Atomics & Locks (Arc and channels).
 
 use tokio::{task, try_join};
-use tracing::{debug, info};
-use tracing::log::warn;
+use tracing::{debug, info, warn};
 use crate::db::account_repo::AccountRepo;
 use crate::domain::value::account_type::AccountType;
 use crate::domain::value::currency::Currency;

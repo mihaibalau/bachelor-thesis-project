@@ -166,13 +166,12 @@ async fn record_deposit(
 ) -> ApiResult<Json<TransactionId>> {
     info!(method = "POST", path = "/api/transactions/deposit", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
-
+    let user_id = UserId::from(claims.sub);
     let account_id = AccountId::from(body.account_id);
 
     let id = state
         .tx_svc
-        .record_deposit(account_id, body.amount)
+        .record_deposit_for_user(user_id, account_id, body.amount)
         .await
         .map_err(ApiError::from)?;
 
@@ -186,13 +185,13 @@ async fn record_withdrawal(
 ) -> ApiResult<Json<TransactionId>> {
     info!(method = "POST", path = "/api/transactions/withdrawal", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
+    let user_id = UserId::from(claims.sub);
 
     let account_id = AccountId::from(body.account_id);
 
     let id = state
         .tx_svc
-        .record_withdrawal(account_id, body.amount)
+        .record_withdrawal_for_user(user_id, account_id, body.amount)
         .await
         .map_err(ApiError::from)?;
 
@@ -206,14 +205,14 @@ async fn record_send(
 ) -> ApiResult<Json<TransactionId>> {
     info!(method = "POST", path = "/api/transactions/send", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
+    let user_id = UserId::from(claims.sub);
 
     let from_id = AccountId::from(body.from_account_id);
     let to_id = AccountId::from(body.recipient_account_id);
 
     let id = state
         .tx_svc
-        .record_send(from_id, to_id, body.value_cents, body.message)
+        .record_send_for_user(user_id, from_id, to_id, body.value_cents, body.message)
         .await
         .map_err(ApiError::from)?;
 
@@ -227,14 +226,14 @@ async fn record_transfer(
 ) -> ApiResult<Json<TransactionId>> {
     info!(method = "POST", path = "/api/transactions/transfer", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
+    let user_id = UserId::from(claims.sub);
 
     let from_id = AccountId::from(body.from_account_id);
     let to_id = AccountId::from(body.to_account_id);
 
     let id = state
         .tx_svc
-        .record_transfer(from_id, to_id, body.value_cents)
+        .record_transfer_for_user(user_id, from_id, to_id, body.value_cents)
         .await
         .map_err(ApiError::from)?;
 
@@ -248,13 +247,14 @@ async fn record_payment(
 ) -> ApiResult<Json<TransactionId>> {
     info!(method = "POST", path = "/api/transactions/payment", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
+    let user_id = UserId::from(claims.sub);
 
     let from_id = AccountId::from(body.from_account_id);
 
     let id = state
         .tx_svc
-        .record_payment(
+        .record_payment_for_user(
+            user_id,
             from_id,
             body.amount,
             body.category,
@@ -274,28 +274,31 @@ async fn get_recent_transactions(
 ) -> ApiResult<Json<RecentTransactionsResponse>> {
     info!(method = "GET", path = "/api/transactions/recent", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
+    let user_id = UserId::from(claims.sub);
     let account_id = AccountId::from(query.account_id);
-    let limit = query.limit.unwrap_or(10).max(1);
 
     let txs = state
         .tx_svc
-        .list_for_account(account_id, limit, 0)
+        .list_recent_for_user(user_id, account_id, query.limit)
         .await
         .map_err(ApiError::from)?;
 
-    let items = txs
-        .into_iter()
-        .map(|tx| TransactionResponse {
-            id: tx.id().unwrap().0,
+    let mut items = Vec::with_capacity(txs.len());
+    for tx in txs {
+        let id = tx
+            .id()
+            .ok_or_else(|| ApiError(ServiceError::internal("transaction missing id")))?
+            .0;
+        items.push(TransactionResponse {
+            id,
             from_account_id: tx.from_account_id().0,
             to_account_id: tx.to_account_id().0,
             transaction_type: tx.transaction_type().as_str().to_string(),
             value_cents: tx.value_cents(),
             recorded_on: tx.recorded_on().to_rfc3339(),
             description: tx.description().to_string(),
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(RecentTransactionsResponse { items }))
 }
@@ -307,40 +310,19 @@ async fn get_account_statement(
 ) -> ApiResult<Json<AccountStatementResponse>> {
     info!(method = "GET", path = "/api/transactions/statement", "incoming request");
 
-    let _user_id = UserId::from(claims.sub);
+    let user_id = UserId::from(claims.sub);
     let account_id = AccountId::from(q.account_id);
-
-    let from = match &q.from {
-        Some(s) => Some(NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .map_err(|e| ApiError(ServiceError::Validation(e.to_string())))?
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_local_timezone(Utc)
-            .unwrap()),
-        None => None,
-    };
-
-    let to = match &q.to {
-        Some(s) => Some(NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .map_err(|e| ApiError(ServiceError::Validation(e.to_string())))?
-            .and_hms_opt(23, 59, 59)
-            .unwrap()
-            .and_local_timezone(Utc)
-            .unwrap()),
-        None => None,
-    };
-
-    let query = crate::service::transaction::AccountStatementQuery {
-        account_id,
-        from,
-        to,
-        limit: q.limit.unwrap_or(100),
-        offset: q.offset.unwrap_or(0),
-    };
 
     let entries = state
         .tx_svc
-        .compute_account_statement(query)
+        .compute_account_statement_for_user_from_strings(
+            user_id,
+            account_id,
+            q.from.clone(),
+            q.to.clone(),
+            q.limit,
+            q.offset,
+        )
         .await
         .map_err(ApiError::from)?;
 

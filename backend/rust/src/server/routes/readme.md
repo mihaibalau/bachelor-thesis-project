@@ -3,14 +3,22 @@
 Base URL: `/api`  
 All “private” endpoints require `Authorization: Bearer <JWT>` header (token from `POST /api/users/login`).
 
-Errors share a common JSON shape:
+Errors share a common JSON shape and consistent HTTP status codes:
 
 ```json
 {
-  "code": "validation_error | conflict | not_found | forbidden | repo_error | concurrency_error | domain_error | unexpected_error",
+  "status": 400,
+  "code": "validation_error",
   "message": "Human readable message"
 }
 ```
+
+HTTP mapping:
+- 400 BAD_REQUEST → code: validation_error | domain_error
+- 403 FORBIDDEN → code: forbidden
+- 404 NOT_FOUND → code: not_found (also used when a resource exists but is not owned by the caller to avoid leaking existence)
+- 409 CONFLICT → code: conflict | concurrency_error
+- 500 INTERNAL_SERVER_ERROR → code: repo_error | unexpected_error
 
 ---
 
@@ -106,8 +114,8 @@ Errors share a common JSON shape:
 
 ```json
 {
-  "account_type": "Savings",   // "Savings" | "Credit" | "Regular"
-  "currency": "RON",           // e.g. "RON" | "EUR" | "USD"
+  "account_type": "Savings",
+  "currency": "RON",
   "initial_balance_cents": 0
 }
 ```
@@ -197,7 +205,7 @@ Used by FE to power the “add by tag/phone + pick currency” flow.
 
 ```json
 {
-  "identifier_type": "tag",    // "tag" | "phone" (currently both use `tag` lookup)
+  "identifier_type": "tag",
   "identifier": "mihai123"
 }
 ```
@@ -221,7 +229,7 @@ Used by FE to power the “add by tag/phone + pick currency” flow.
 }
 ```
 
-If no compatible currencies between owner and target, returns `422 validation_error`.
+If no compatible currencies between owner and target, returns `400 validation_error`.
 
 ---
 
@@ -240,7 +248,7 @@ If no compatible currencies between owner and target, returns `422 validation_er
 - Success: `200 OK` with empty body (`{}` if you choose to serialize unit).
 
 - Errors:
-    - `422 validation_error` if account does not exist.
+    - `400 validation_error` if account does not exist.
     - `409 conflict` if affiliate already exists for that `(owner, sub_account)` pair.
 
 ---
@@ -333,7 +341,7 @@ Search is ignored if `search` length < 2 characters.
 
 ## Transactions (`/api/transactions`)
 
-All transaction endpoints are **private** and require `Authorization: Bearer <JWT>`.[file:23][file:24]
+All transaction endpoints are private and require `Authorization: Bearer <JWT>`.
 
 Supported `transaction_type` values:
 
@@ -347,7 +355,7 @@ Supported `transaction_type` values:
 
 ### Record deposit (ATM Deposit)
 
-Simulates depositing cash at an ATM: money moves from the bank’s main account (ID `1`) to the user’s account.[file:23]
+Simulates depositing cash at an ATM: money moves from the bank’s main account (ID `1`) to the user’s account.
 
 - **POST** `/api/transactions/deposit`
 
@@ -374,7 +382,7 @@ Simulates depositing cash at an ATM: money moves from the bank’s main account 
 
 ### Record withdrawal (ATM Withdrawal)
 
-Simulates withdrawing cash: money moves from the user account to the bank’s main account (ID `1`).[file:23]
+Simulates withdrawing cash: money moves from the user account to the bank’s main account (ID `1`).
 
 - **POST** `/api/transactions/withdrawal`
 

@@ -9,8 +9,9 @@ use crate::service::errors::ServiceError;
 
 #[derive(Serialize)]
 struct ErrorBody {
+    status: u16,
     code: &'static str,
-    message: String
+    message: String,
 }
 
 /// Small wrapper so we can implement `IntoResponse`
@@ -37,7 +38,7 @@ impl IntoResponse for ApiError {
                 format!("{} conflict: {}", entity, message)
             ),
             ServiceError::Validation(message) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::BAD_REQUEST,
                 "validation_error",
                 message,
             ),
@@ -68,7 +69,7 @@ impl IntoResponse for ApiError {
             ),
         };
 
-        (status, Json(ErrorBody { code, message })).into_response()
+        (status, Json(ErrorBody { status: status.as_u16(), code, message })).into_response()
     }
 }
 

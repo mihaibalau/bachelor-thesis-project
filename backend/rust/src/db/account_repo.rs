@@ -188,15 +188,15 @@ impl AccountRepo {
                     SELECT 1
                     FROM accounts
                     WHERE account_type = $1 AND user_id = $2
-                )
+                ) as "exists!: bool"
             "#,
             account_type.as_str(),
             user_id.0
         )
-            .fetch_optional(self.db.pool())
+            .fetch_one(self.db.pool())
             .await?;
 
-        Ok(rec.is_some())
+        Ok(rec.exists)
     }
 
     pub async fn list_type_currency_pairs(

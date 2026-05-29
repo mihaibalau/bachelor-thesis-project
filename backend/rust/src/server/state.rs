@@ -18,7 +18,7 @@ use crate::{
 pub type UserSvc = UserService<UserRepo, AccountRepo>;
 pub type AccountSvc = AccountService<AccountRepo>;
 pub type TxSvc = TransactionService<TransactionRepo, AccountRepo>;
-pub type AffiliateSvc = AffiliateService<AffiliateRepo, AccountRepo>;
+pub type AffiliateSvc = AffiliateService<AffiliateRepo, AccountRepo, UserRepo>;
 
 pub struct AppState {
     pub user_svc: Arc<UserSvc>,

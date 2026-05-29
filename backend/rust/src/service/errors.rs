@@ -65,6 +65,11 @@ impl ServiceError {
         }
     }
 
+    /// Create an internal/unexpected error from a simple message.
+    pub fn internal(msg: impl Into<String>) -> Self {
+        ServiceError::Unexpected(AnyError::msg(msg.into()))
+    }
+
     /// Attach extra human-readable context while preserving the error chain.
     ///
     /// Mirroring the `context` / `with_context` pattern used with `anyhow`

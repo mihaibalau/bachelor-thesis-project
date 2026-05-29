@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::collections::HashSet;
 
 use axum::{
     extract::{Path, Query, State},
@@ -11,10 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::{
-    domain::{
-        ids::{AccountId, UserId},
-        value::currency::Currency,
-    },
+    domain::ids::{AccountId, UserId},
     server::{
         auth::require_auth,
         error::{ApiError, ApiResult},
@@ -23,6 +19,7 @@ use crate::{
     service::{
         auth::Claims,
         errors::ServiceError,
+        affiliate::ListAffiliatesParams,
     },
 };
 
@@ -92,6 +89,8 @@ pub struct ResolveAffiliateTargetResponse {
     pub currencies: Vec<ResolveAffiliateCurrencyOption>,
 }
 
+// ── Router ────────────────────────────────────────────────────────────────────
+
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let private = Router::new()
 
@@ -111,6 +110,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
     Router::new().merge(private)
 }
+
+// ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn create_affiliate(
     State(state): State<Arc<AppState>>,
@@ -189,36 +190,17 @@ async fn get_affiliate(
     let owner_id = UserId::from(claims.sub);
     let recipient_sub_account_id = AccountId::from(sub_account_id);
 
-    let affiliate = state
+    let view = state
         .affiliate_svc
-        .get(owner_id, recipient_sub_account_id)
+        .get_affiliate_view(owner_id, recipient_sub_account_id)
         .await
         .map_err(ApiError::from)?;
-
-    let account = state
-        .account_svc
-        .get_account(affiliate.recipient_sub_account_id())
-        .await
-        .map_err(ApiError::from)?;
-
-    let recipient_user_id = account.user_id();
-    let recipient_user = state
-        .user_svc
-        .get_user(recipient_user_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    let full_name = format!(
-        "{} {}",
-        recipient_user.first_name(),
-        recipient_user.last_name()
-    );
 
     Ok(Json(AffiliateResponse {
-        recipient_sub_account_id: affiliate.recipient_sub_account_id().0,
-        nickname: affiliate.nickname().to_string(),
-        recipient_full_name: full_name,
-        currency: account.currency().as_str().to_string(),
+        recipient_sub_account_id: view.recipient_sub_account_id,
+        nickname: view.nickname,
+        recipient_full_name: view.recipient_full_name,
+        currency: view.currency,
     }))
 }
 
@@ -231,96 +213,36 @@ async fn list_affiliates(
 
     let owner_id = UserId::from(claims.sub);
 
-    let affiliates = state
+    let params = ListAffiliatesParams {
+        page: query.page,
+        page_size: query.page_size,
+        search: query.search,
+        currency: query.currency,
+        sort: query.sort,
+    };
+
+    let view = state
         .affiliate_svc
-        .list_for_owner(owner_id)
+        .list_affiliates_view(owner_id, params)
         .await
         .map_err(ApiError::from)?;
 
-    let mut items = Vec::with_capacity(affiliates.len());
-
-    for a in affiliates {
-        let account = state
-            .account_svc
-            .get_account(a.recipient_sub_account_id())
-            .await
-            .map_err(ApiError::from)?;
-
-        let user = state
-            .user_svc
-            .get_user(account.user_id())
-            .await
-            .map_err(ApiError::from)?;
-
-        let full_name = format!("{} {}", user.first_name(), user.last_name());
-
-        items.push(AffiliateResponse {
-            recipient_sub_account_id: a.recipient_sub_account_id().0,
-            nickname: a.nickname().to_string(),
-            recipient_full_name: full_name,
-            currency: account.currency().as_str().to_string(),
-        });
-    }
-
-    // Search (min 2 chars)
-    let mut filtered = items;
-    if let Some(ref s) = query.search {
-        let s_trim = s.trim().to_lowercase();
-        if s_trim.len() >= 2 {
-            filtered = filtered
-                .into_iter()
-                .filter(|item| {
-                    let nick = item.nickname.to_lowercase();
-                    let name = item.recipient_full_name.to_lowercase();
-                    nick.contains(&s_trim) || name.contains(&s_trim)
-                })
-                .collect();
-        }
-    }
-
-    // Filter by currency
-    if let Some(ref curr) = query.currency {
-        let curr_up = curr.to_uppercase();
-        filtered = filtered
-            .into_iter()
-            .filter(|item| item.currency.eq_ignore_ascii_case(&curr_up))
-            .collect();
-    }
-
-    // Sort
-    let sort_dir = query.sort.as_deref().unwrap_or("asc");
-    filtered.sort_by(|a, b| {
-        let ord = a.nickname.to_lowercase().cmp(&b.nickname.to_lowercase());
-        if sort_dir == "desc" {
-            ord.reverse()
-        } else {
-            ord
-        }
-    });
-
-    // Pagination
-    let page = query.page.unwrap_or(1).max(1);
-    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
-    let total = filtered.len() as u64;
-
-    let start = ((page - 1) * page_size) as usize;
-    let end = (start + page_size as usize).min(filtered.len());
-
-    let page_items: Vec<AffiliateResponse> = if start >= filtered.len() {
-        Vec::new()
-    } else {
-        filtered
-            .into_iter()
-            .skip(start)
-            .take(page_size as usize)
-            .collect()
-    };
+    let items: Vec<AffiliateResponse> = view
+        .items
+        .into_iter()
+        .map(|v| AffiliateResponse {
+            recipient_sub_account_id: v.recipient_sub_account_id,
+            nickname: v.nickname,
+            recipient_full_name: v.recipient_full_name,
+            currency: v.currency,
+        })
+        .collect();
 
     Ok(Json(PaginatedAffiliatesResponse {
-        items: page_items,
-        page,
-        page_size,
-        total,
+        items,
+        page: view.page,
+        page_size: view.page_size,
+        total: view.total,
     }))
 }
 
@@ -332,67 +254,32 @@ async fn resolve_affiliate_target(
     info!(method = "POST", path = "/api/affiliates/resolve-target", "incoming request");
 
     let owner_id = UserId::from(claims.sub);
-    let identifier = body.identifier.trim();
 
-    if identifier.is_empty() {
-        return Err(ApiError(ServiceError::Validation(
-            "identifier cannot be empty".into(),
-        )));
-    }
+    let view = match body.identifier_type {
+        IdentifierType::Tag => state
+            .affiliate_svc
+            .resolve_target_by_tag(owner_id, body.identifier)
+            .await
+            .map_err(ApiError::from)?,
+        IdentifierType::Phone => {
+            return Err(ApiError(ServiceError::Validation(
+                "phone identifier not supported yet".into(),
+            )));
+        }
+    };
 
-    let target_user = state
-        .user_svc
-        .find_by_tag(identifier)
-        .await
-        .map_err(ApiError::from)?;
-
-    let target_user_id = target_user.id().ok_or_else(|| {
-        ApiError(ServiceError::Validation(
-            "target user has no id in memory".to_string(),
-        ))
-    })?;
-
-    let owner_accounts = state
-        .account_svc
-        .list_for_user(owner_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    let target_accounts = state
-        .account_svc
-        .list_for_user(target_user_id)
-        .await
-        .map_err(ApiError::from)?;
-
-    let owner_currencies: HashSet<_> = owner_accounts
-        .iter()
-        .map(|a| a.currency())
+    let currencies = view
+        .currencies
+        .into_iter()
+        .map(|c| ResolveAffiliateCurrencyOption {
+            currency: c.currency,
+            recipient_sub_account_id: c.recipient_sub_account_id,
+        })
         .collect();
 
-    let mut options = Vec::new();
-
-    for acc in target_accounts {
-
-        let curr = acc.currency();
-        if owner_currencies.contains(&curr) {
-            options.push(ResolveAffiliateCurrencyOption {
-                currency: curr.as_str().to_string(),
-                recipient_sub_account_id: acc.id().unwrap().0,
-            });
-        }
-    }
-
-    if options.is_empty() {
-        return Err(ApiError(ServiceError::Validation(
-            "no compatible currencies between owner and target user".into(),
-        )));
-    }
-
-    let full_name = format!("{} {}", target_user.first_name(), target_user.last_name());
-
     Ok(Json(ResolveAffiliateTargetResponse {
-        recipient_user_id: target_user_id.0,
-        recipient_full_name: full_name,
-        currencies: options,
+        recipient_user_id: view.recipient_user_id,
+        recipient_full_name: view.recipient_full_name,
+        currencies,
     }))
 }

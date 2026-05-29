@@ -116,6 +116,88 @@ where
         Self { tx_repo, account_repo }
     }
 
+    async fn ensure_account_owned_by(&self, user_id: UserId, account_id: AccountId) -> ServiceResult<()> {
+        let account = self.account_repo.get_by_id(account_id).await?;
+        if account.user_id() != user_id { return Err(ServiceError::not_found("account")); }
+        Ok(())
+    }
+
+    /// Thin wrappers to keep routes slim -------------------------------------------------
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, account_id = %account_id.0, amount_units))]
+    pub async fn record_deposit_for_user(&self, user_id: UserId, account_id: AccountId, amount_units: i64) -> ServiceResult<TransactionId> {
+        self.ensure_account_owned_by(user_id, account_id).await?;
+        self.record_deposit(account_id, amount_units).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, account_id = %account_id.0, amount_units))]
+    pub async fn record_withdrawal_for_user(&self, user_id: UserId, account_id: AccountId, amount_units: i64) -> ServiceResult<TransactionId> {
+        self.ensure_account_owned_by(user_id, account_id).await?;
+        self.record_withdrawal(account_id, amount_units).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, from = %from_id.0, to = %recipient_account_id.0, value_cents))]
+    pub async fn record_send_for_user(&self, user_id: UserId, from_id: AccountId, recipient_account_id: AccountId, value_cents: i64, message: String) -> ServiceResult<TransactionId> {
+        self.ensure_account_owned_by(user_id, from_id).await?;
+        self.record_send(from_id, recipient_account_id, value_cents, message).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, from = %from_id.0, to = %to_id.0, value_cents))]
+    pub async fn record_transfer_for_user(&self, user_id: UserId, from_id: AccountId, to_id: AccountId, value_cents: i64) -> ServiceResult<TransactionId> {
+        self.ensure_account_owned_by(user_id, from_id).await?;
+        self.ensure_account_owned_by(user_id, to_id).await?;
+        self.record_transfer(from_id, to_id, value_cents).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, from = %from_id.0, amount_units))]
+    pub async fn record_payment_for_user(&self, user_id: UserId, from_id: AccountId, amount_units: i64, category: String, merchant_name: String, note: Option<String>) -> ServiceResult<TransactionId> {
+        self.ensure_account_owned_by(user_id, from_id).await?;
+        self.record_payment(from_id, amount_units, category, merchant_name, note).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, account_id = %account_id.0, limit))]
+    pub async fn list_recent_for_user(&self, user_id: UserId, account_id: AccountId, limit: Option<i64>) -> ServiceResult<Vec<Transaction>> {
+        self.ensure_account_owned_by(user_id, account_id).await?;
+        let limit = limit.unwrap_or(10).max(1);
+        self.list_for_account(account_id, limit, 0).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, account_id = %account_id.0))]
+    pub async fn compute_account_statement_for_user_from_strings(
+        &self,
+        user_id: UserId,
+        account_id: AccountId,
+        from: Option<String>,
+        to: Option<String>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> ServiceResult<Vec<AccountStatementEntry>> {
+        use chrono::{NaiveDate, TimeZone};
+        use chrono::Utc;
+        self.ensure_account_owned_by(user_id, account_id).await?;
+        let from_dt = match from.as_ref() {
+            Some(s) => Some(NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|e| ServiceError::Validation(e.to_string()))?
+                .and_hms_opt(0,0,0).unwrap()
+                .and_local_timezone(Utc).unwrap()),
+            None => None,
+        };
+        let to_dt = match to.as_ref() {
+            Some(s) => Some(NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                .map_err(|e| ServiceError::Validation(e.to_string()))?
+                .and_hms_opt(23,59,59).unwrap()
+                .and_local_timezone(Utc).unwrap()),
+            None => None,
+        };
+        let query = AccountStatementQuery { account_id, from: from_dt, to: to_dt, limit: limit.unwrap_or(100), offset: offset.unwrap_or(0) };
+        self.compute_account_statement(query).await
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, per_account_limit))]
+    pub async fn compute_user_monthly_summary_for_user(&self, user_id: UserId, per_account_limit: Option<i64>) -> ServiceResult<UserTransactionStatistics> {
+        let limit = per_account_limit.unwrap_or(500).clamp(1, 1000);
+        self.compute_user_statistics(user_id, limit).await
+    }
+
     /// Record a new transaction
     ///
     /// This method:
@@ -145,6 +227,9 @@ where
     /// Raw listing for an account
     pub async fn list_for_account(&self, account_id: AccountId, limit: i64, offset: i64)
         -> ServiceResult<Vec<Transaction>> {
+
+        let limit = limit.clamp(1, 100);
+        let offset = offset.max(0);
 
         let txs = self.tx_repo.list_for_account(account_id, limit, offset).await?;
         Ok(txs)
@@ -316,7 +401,9 @@ where
             ));
         }
 
-        let value_cents = amount_units * 100;
+        let value_cents = amount_units
+            .checked_mul(100)
+            .ok_or_else(|| ServiceError::Validation("amount too large".into()))?;
 
         let cmd = RecordTransactionCommand {
             from_account_id: BANK_ACCOUNT_ID,
@@ -340,7 +427,9 @@ where
             ));
         }
 
-        let value_cents = amount_units * 100;
+        let value_cents = amount_units
+            .checked_mul(100)
+            .ok_or_else(|| ServiceError::Validation("amount too large".into()))?;
 
         let cmd = RecordTransactionCommand {
             from_account_id: user_account_id,

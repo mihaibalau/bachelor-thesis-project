@@ -84,6 +84,28 @@ where
         Self { repo }
     }
 
+    /// Accept raw strings from the API and perform parsing/validation here in the service.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id.0, account_type = %account_type_str, currency = %currency_str, initial_balance_cents))]
+    pub async fn open_account_raw(
+        &self,
+        user_id: UserId,
+        account_type_str: String,
+        currency_str: String,
+        initial_balance_cents: i64,
+    ) -> ServiceResult<AccountId> {
+        use core::str::FromStr;
+        let account_type = AccountType::from_str(&account_type_str)
+            .map_err(|_| ServiceError::Validation("invalid account_type".to_string()))?;
+        let currency = Currency::from_str(&currency_str)
+            .map_err(|_| ServiceError::Validation("invalid currency".to_string()))?;
+        if initial_balance_cents < 0 {
+            return Err(ServiceError::Validation(
+                "initial_balance_cents must be >= 0".to_string(),
+            ));
+        }
+        self.open_account(user_id, account_type, currency, initial_balance_cents).await
+    }
+
     pub async fn open_account(
         &self,
         user_id: UserId,
@@ -104,29 +126,50 @@ where
             ));
         }
 
-        // 2. Generate unique IBAN for the new account
-        let mut iban = IBAN::generate()?;
-        while self.repo.exists_by_iban(iban.as_str()).await? {
-            iban = IBAN::generate()?;
+        // 2. Try to insert with a freshly generated IBAN.
+        // Avoid an unbounded pre-check loop; rely on DB unique constraint and retry a few times.
+        const MAX_RETRIES: usize = 5;
+        for attempt in 0..MAX_RETRIES {
+            let iban = IBAN::generate()?;
+
+            let account = Account::create(
+                user_id,
+                account_type,
+                currency,
+                initial_balance_cents,
+                iban,
+            )?;
+
+            match self.repo.insert(&account).await {
+                Ok(id) => return Ok(id),
+                Err(RepoError::Db(sqlx::Error::Database(db_err))) => {
+                    // 23505 => unique violation (Postgres)
+                    if db_err.code().as_deref() == Some("23505") {
+                        // Likely IBAN collision or unique (user_id, account_type)
+                        // If it's an IBAN clash, retry with a new IBAN; otherwise surface a conflict.
+                        let msg = db_err.message().to_lowercase();
+                        if msg.contains("iban") && attempt + 1 < MAX_RETRIES {
+                            continue; // retry with a different IBAN
+                        } else {
+                            return Err(ServiceError::conflict(
+                                "account",
+                                "duplicate detected",
+                            ));
+                        }
+                    } else {
+                        return Err(ServiceError::from(RepoError::Db(sqlx::Error::Database(db_err))));
+                    }
+                }
+                Err(e) => return Err(ServiceError::from(e)),
+            }
         }
 
-        // 3. Build the domain `Account`
-        // Following the same "rehydrate vs constructors" pattern as your repos
-        // (see TryFrom<AccountRow>), here we use a dedicated constructor for
-        // new accounts
-        let account = Account::create(
-            user_id,
-            account_type,
-            currency,
-            initial_balance_cents,
-            iban,
-        )?;
-
-        let account_id = self.repo.insert(&account).await?;
-        Ok(account_id)
+        // If we exhausted retries, surface a conflict
+        Err(ServiceError::conflict("account", "unable to allocate a unique IBAN after retries"))
     }
 
     /// Load a single account, mapping RepoError::NotFound into ServiceError::NotFound
+    #[tracing::instrument(skip(self), fields(account_id = %account_id.0))]
     pub async fn get_account(&self, account_id: AccountId) -> ServiceResult<Account> {
         match self.repo.get_by_id(account_id).await {
             Ok(account) => Ok(account),

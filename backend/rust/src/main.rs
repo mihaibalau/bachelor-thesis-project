@@ -1,8 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use anyhow::Context;
 use axum::Router;
-use sqlx::PgPool;
 use tracing_subscriber::EnvFilter;
 
 mod db;
@@ -61,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     let affiliate_svc: Arc<AffiliateSvc> = Arc::new(AffiliateService::new(
         affiliate_repo.clone(),
         account_repo.clone(),
+        user_repo.clone(),
     ));
 
     // 5. AppState + router

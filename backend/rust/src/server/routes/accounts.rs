@@ -1,7 +1,33 @@
 use std::collections::HashSet;
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use axum::{
+    extract::{Path, State},
+    middleware,
+    routing::{get, post},
+    Extension, Json, Router,
+};
+use tracing::info;
+use crate::{
+    domain::{
+        ids::{AccountId, UserId},
+        value::{
+            account_type::AccountType,
+            currency::Currency,
+        },
+    },
+    server::{
+        auth::require_auth,
+        error::{ApiError, ApiResult},
+        state::AppState,
+    },
+    service::{
+        auth::Claims,
+        errors::ServiceError,
+    },
+};
+
+// ── Request DTOs ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct OpenAccountRequest {
@@ -9,6 +35,8 @@ pub struct OpenAccountRequest {
     pub currency: String,
     pub initial_balance_cents: i64,
 }
+
+// ── Response DTOs ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct AccountResponse {
@@ -37,32 +65,7 @@ pub struct AccountAvailabilityResponse {
     pub types: Vec<AccountTypeAvailability>,
 }
 
-use axum::{
-    extract::{Path, State},
-    middleware,
-    routing::{get, post},
-    Extension, Json, Router,
-};
-use tracing::info;
-
-use crate::{
-    domain::{
-        ids::{AccountId, UserId},
-        value::{
-            account_type::AccountType,
-            currency::Currency,
-        },
-    },
-    server::{
-        auth::require_auth,
-        error::{ApiError, ApiResult},
-        state::AppState,
-    },
-    service::{
-        auth::Claims,
-        errors::ServiceError,
-    },
-};
+// ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let private = Router::new()
@@ -77,6 +80,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new().merge(private)
 }
 
+// ── Handlers ──────────────────────────────────────────────────────────────────
+
 async fn open_account(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
@@ -84,47 +89,35 @@ async fn open_account(
 ) -> ApiResult<Json<AccountResponse>> {
     info!(method = "POST", path = "/api/accounts", "incoming request");
 
-    // 1. Check the account type
-    let account_type = match body.account_type.as_str() {
-        "Savings" => AccountType::Savings,
-        "Credit"  => AccountType::Credit,
-        "Regular" => AccountType::Regular,
-        _ => {
-            return Err(ApiError(ServiceError::Validation(
-                "invalid account_type".to_string(),
-            )))
-        }
-    };
-
-    // 2. Check the currency
-    let currency = Currency::from_str(&body.currency).map_err(|_| {
-        ApiError(ServiceError::Validation("invalid currency".to_string()))
-    })?;
-
-    // 3. Auth user is the owner
+    // Auth user is the owner
     let user_id = UserId::from(claims.sub);
 
-    // 4. Open the account
+    // Delegate all parsing/validation to the service
     let account_id = state
         .account_svc
-        .open_account(
+        .open_account_raw(
             user_id,
-            account_type,
-            currency,
+            body.account_type,
+            body.currency,
             body.initial_balance_cents,
         )
         .await
         .map_err(ApiError::from)?;
 
-    // 5. Get the created account
+    // 6. Get the created account
     let account = state
         .account_svc
         .get_account(account_id)
         .await
         .map_err(ApiError::from)?;
 
+    let id = account
+        .id()
+        .ok_or_else(|| ApiError(ServiceError::internal("account missing id")))?
+        .0;
+
     Ok(Json(AccountResponse {
-        id: account.id().unwrap().0,
+        id,
         account_type: account.account_type().as_str().to_string(),
         currency: account.currency().as_str().to_string(),
         balance_cents: account.balance_cents(),
@@ -148,11 +141,16 @@ async fn get_account(
         .map_err(ApiError::from)?;
 
     if account.user_id().0 != claims.sub {
-        return Err(ApiError(ServiceError::Forbidden));
+        return Err(ApiError(ServiceError::not_found("account")));
     }
 
+    let id = account
+        .id()
+        .ok_or_else(|| ApiError(ServiceError::internal("account missing id")))?
+        .0;
+
     Ok(Json(AccountResponse {
-        id: account.id().unwrap().0,
+        id,
         account_type: account.account_type().as_str().to_string(),
         currency: account.currency().as_str().to_string(),
         balance_cents: account.balance_cents(),

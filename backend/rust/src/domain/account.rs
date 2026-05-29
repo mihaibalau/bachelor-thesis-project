@@ -85,7 +85,10 @@ impl Account{
         if amount_cents <= 0 {
             return Err(DomainError::validation("Credit amount must be > 0"));
         }
-        self.balance_cents = self.balance_cents.saturating_add(amount_cents);
+        self.balance_cents = self
+            .balance_cents
+            .checked_add(amount_cents)
+            .ok_or_else(|| DomainError::validation("Balance overflow"))?;
         Ok(())
     }
 
