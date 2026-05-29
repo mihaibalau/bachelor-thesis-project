@@ -45,7 +45,7 @@ impl From<AccountId> for i64{
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct TransactionId(pub i64);
 
 impl fmt::Display for TransactionId {

@@ -13,6 +13,8 @@ use crate::domain::value::transaction_type::TransactionType;
 use crate::service::account::AccountRepository;
 use crate::service::errors::{ServiceError, ServiceResult};
 
+const BANK_ACCOUNT_ID: AccountId = AccountId(1);
+
 /// Abstraction over transaction persistence
 ///
 /// Defining this as a trait lets you unit-test `TransactionService` with
@@ -178,7 +180,10 @@ where
             for tx in txs {
                 // Simple model: outgoing reduces balance, incoming increases
                 let delta = match tx.transaction_type() {
-                    TransactionType::Transfer | TransactionType::Withdrawal | TransactionType::Send => -tx.value_cents(),
+                    TransactionType::Transfer
+                    | TransactionType::Withdrawal
+                    | TransactionType::Send
+                    | TransactionType::Payment => -tx.value_cents(), // NEW
                     TransactionType::Deposit => tx.value_cents(),
                 };
 
@@ -245,7 +250,8 @@ where
                             match tx.transaction_type() {
                                 TransactionType::Transfer
                                 | TransactionType::Send
-                                | TransactionType::Withdrawal => {
+                                | TransactionType::Withdrawal
+                                | TransactionType::Payment => {
                                     total_outgoing.fetch_add(value, Ordering::Relaxed);
                                 }
                                 TransactionType::Deposit => {
@@ -299,5 +305,167 @@ where
         Ok(stats)
     }
 
+    pub async fn record_deposit(
+        &self,
+        user_account_id: AccountId,
+        amount_units: i64,
+    ) -> ServiceResult<TransactionId> {
+        if amount_units <= 0 {
+            return Err(ServiceError::Validation(
+                "deposit amount must be positive".into(),
+            ));
+        }
 
+        let value_cents = amount_units * 100;
+
+        let cmd = RecordTransactionCommand {
+            from_account_id: BANK_ACCOUNT_ID,
+            to_account_id: user_account_id,
+            transaction_type: TransactionType::Deposit,
+            value_cents,
+            description: "ATM Deposit".to_string(),
+        };
+
+        self.record_transaction(cmd).await
+    }
+
+    pub async fn record_withdrawal(
+        &self,
+        user_account_id: AccountId,
+        amount_units: i64,
+    ) -> ServiceResult<TransactionId> {
+        if amount_units <= 0 {
+            return Err(ServiceError::Validation(
+                "withdrawal amount must be positive".into(),
+            ));
+        }
+
+        let value_cents = amount_units * 100;
+
+        let cmd = RecordTransactionCommand {
+            from_account_id: user_account_id,
+            to_account_id: BANK_ACCOUNT_ID,
+            transaction_type: TransactionType::Withdrawal,
+            value_cents,
+            description: "ATM Withdrawal".to_string(),
+        };
+
+        self.record_transaction(cmd).await
+    }
+
+    pub async fn record_send(
+        &self,
+        from_account_id: AccountId,
+        recipient_account_id: AccountId,
+        value_cents: i64,
+        user_message: String,
+    ) -> ServiceResult<TransactionId> {
+        if value_cents <= 0 {
+            return Err(ServiceError::Validation(
+                "send amount must be positive".into(),
+            ));
+        }
+
+        let from_acc = self.account_repo.get_by_id(from_account_id).await?;
+        let to_acc = self.account_repo.get_by_id(recipient_account_id).await?;
+
+        if from_acc.currency() != to_acc.currency() {
+            return Err(ServiceError::Validation(
+                "cannot send between accounts with different currencies (use exchange)".into(),
+            ));
+        }
+
+        let description = format!("Send: {}", user_message.trim());
+
+        let cmd = RecordTransactionCommand {
+            from_account_id,
+            to_account_id: recipient_account_id,
+            transaction_type: TransactionType::Send,
+            value_cents,
+            description,
+        };
+
+        self.record_transaction(cmd).await
+    }
+
+    pub async fn record_transfer(
+        &self,
+        from_account_id: AccountId,
+        to_account_id: AccountId,
+        value_cents: i64,
+    ) -> ServiceResult<TransactionId> {
+        if value_cents <= 0 {
+            return Err(ServiceError::Validation(
+                "transfer amount must be positive".into(),
+            ));
+        }
+
+        let from_acc = self.account_repo.get_by_id(from_account_id).await?;
+        let to_acc = self.account_repo.get_by_id(to_account_id).await?;
+
+        if from_acc.user_id() != to_acc.user_id() {
+            return Err(ServiceError::Forbidden);
+        }
+
+        if from_acc.currency() != to_acc.currency() {
+            return Err(ServiceError::Validation(
+                "cross-currency transfer not supported yet".into(),
+            ));
+        }
+
+        let description = format!(
+            "Transfer {} {} -> {} {}",
+            from_acc.account_type().as_str(),
+            from_acc.currency().as_str(),
+            to_acc.account_type().as_str(),
+            to_acc.currency().as_str()
+        );
+
+        let cmd = RecordTransactionCommand {
+            from_account_id,
+            to_account_id,
+            transaction_type: TransactionType::Transfer,
+            value_cents,
+            description,
+        };
+
+        self.record_transaction(cmd).await
+    }
+
+    pub async fn record_payment(
+        &self,
+        from_account_id: AccountId,
+        amount_units: i64,
+        category: String,
+        merchant_name: String,
+        note: Option<String>,
+    ) -> ServiceResult<TransactionId> {
+        if amount_units <= 0 {
+            return Err(ServiceError::Validation(
+                "payment amount must be positive".into(),
+            ));
+        }
+
+        let value_cents = amount_units * 100;
+
+        let description = format!(
+            "Payment | category: {} | merchant: {}{}",
+            category.trim(),
+            merchant_name.trim(),
+            note
+                .as_ref()
+                .map(|n| format!(" | note: {}", n.trim()))
+                .unwrap_or_default()
+        );
+
+        let cmd = RecordTransactionCommand {
+            from_account_id,
+            to_account_id: BANK_ACCOUNT_ID,
+            transaction_type: TransactionType::Payment,
+            value_cents,
+            description,
+        };
+
+        self.record_transaction(cmd).await
+    }
 }
