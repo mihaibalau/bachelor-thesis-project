@@ -1,3 +1,5 @@
 /backend/rust/.idea
 /backend/rust/target
 /backend/c/.idea
+/backend/c/build
+backend/readme.md

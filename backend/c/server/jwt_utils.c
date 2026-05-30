@@ -12,9 +12,8 @@
 #include <stdio.h>
 #include <time.h>
 
-/* ── Base64url helpers ───────────────────────────────────────────────────── */
 
-/* Base64url encode: RFC 4648 §5 — '+' → '-', '/' → '_', strip '=' */
+// Base64url encode: RFC 4648 §5 — '+' → '-', '/' → '_', strip '='
 static char *b64url_encode(const unsigned char *data, size_t len) {
     BIO *bmem = BIO_new(BIO_s_mem());
     BIO *b64  = BIO_new(BIO_f_base64());
@@ -44,11 +43,11 @@ static char *b64url_encode(const unsigned char *data, size_t len) {
     return out;
 }
 
-/* Base64url decode → allocates output buffer; caller must free() */
+// Base64url decode → allocates output buffer; caller must free()
 static unsigned char *b64url_decode(const char *in, size_t *out_len) {
     size_t in_len = strlen(in);
 
-    /* reconstruct padding */
+    // reconstruct padding
     size_t pad  = (4 - (in_len % 4)) % 4;
     char *padded = (char *)malloc(in_len + pad + 1);
     if (!padded) return NULL;
@@ -56,7 +55,7 @@ static unsigned char *b64url_decode(const char *in, size_t *out_len) {
     for (size_t i = 0; i < pad; ++i) padded[in_len + i] = '=';
     padded[in_len + pad] = '\0';
 
-    /* base64url → base64 */
+    // base64url → base64
     for (size_t i = 0; padded[i]; ++i) {
         if (padded[i] == '-') padded[i] = '+';
         else if (padded[i] == '_') padded[i] = '/';
@@ -78,7 +77,7 @@ static unsigned char *b64url_decode(const char *in, size_t *out_len) {
     return buf;
 }
 
-/* ── HMAC-SHA256 ─────────────────────────────────────────────────────────── */
+// ── HMAC-SHA256 ────────────────────────────────────────────────────
 
 static bool hmac_sha256(
     const char *secret,
@@ -95,7 +94,7 @@ static bool hmac_sha256(
     return result != NULL;
 }
 
-/* ── Public API ──────────────────────────────────────────────────────────── */
+// ── Public API ─────────────────────────────────────────────────────────
 
 bool jwt_decode_user_id(
     const char *secret,
@@ -103,11 +102,11 @@ bool jwt_decode_user_id(
     UserId *out_user_id,
     ServiceError *err
 ) {
-    /* JWT = header.payload.signature  */
+    // JWT = header.payload.signature
 
     fprintf(stderr, "[jwt_decode] token = '%s'\n", token); // ← ADAUGĂ ASTA
 
-    /* 1. Split the token */
+    // 1. Split the token
     const char *dot1 = strchr(token, '.');
     if (!dot1) {
         if (err) *err = service_error_validation("invalid JWT: missing first dot");
@@ -119,7 +118,7 @@ bool jwt_decode_user_id(
         return false;
     }
 
-    /* 2. Check the signature: HMAC-SHA256(header + "." + payload, secret) */
+    // 2. Check the signature: HMAC-SHA256(header + "." + payload, secret)
     size_t header_payload_len = (size_t)(dot2 - token);
     char *header_payload = (char *)malloc(header_payload_len + 1);
     if (!header_payload) {
@@ -137,7 +136,7 @@ bool jwt_decode_user_id(
     }
     free(header_payload);
 
-    /* 3. Decode the signature from the token and compare  */
+    // 3. Decode the signature from the token and compare
     size_t token_sig_len = 0;
     unsigned char *token_sig = b64url_decode(dot2 + 1, &token_sig_len);
     if (!token_sig || token_sig_len != 32) {
@@ -154,7 +153,7 @@ bool jwt_decode_user_id(
     }
     free(token_sig);
 
-    /* 4. Decode the payload and extract "sub" + "exp" */
+    // 4. Decode the payload and extract "sub" + "exp
     size_t payload_b64_len = (size_t)(dot2 - dot1 - 1);
     char *payload_b64 = (char *)malloc(payload_b64_len + 1);
     if (!payload_b64) {
@@ -173,7 +172,7 @@ bool jwt_decode_user_id(
         return false;
     }
 
-    /* Null-terminate for jansson */
+    // Null-terminate for jansson
     unsigned char *payload_str = (unsigned char *)realloc(payload_json, payload_json_len + 1);
     if (!payload_str) { free(payload_json); if (err) *err = service_error_validation("OOM"); return false; }
     payload_str[payload_json_len] = '\0';
@@ -187,7 +186,7 @@ bool jwt_decode_user_id(
         return false;
     }
 
-    /* 5. Check exp */
+    // 5. Check exp
     json_t *exp_j = json_object_get(root, "exp");
     if (exp_j && json_is_integer(exp_j)) {
         time_t exp = (time_t)json_integer_value(exp_j);
@@ -198,7 +197,7 @@ bool jwt_decode_user_id(
         }
     }
 
-    /* 6. Extract sub */
+    // 6. Extract sub
     json_t *sub_j = json_object_get(root, "sub");
     if (!sub_j || !json_is_integer(sub_j)) {
         json_decref(root);
@@ -224,7 +223,7 @@ bool jwt_encode_user_id(
     size_t out_token_size,
     ServiceError *err
 ) {
-    /* {"alg":"HS256","typ":"JWT"} — jsonwebtoken from Rust */
+    // {"alg":"HS256","typ":"JWT"} — jsonwebtoken from Rust
     const char *header_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
     char *header_b64 = b64url_encode(
         (const unsigned char *)header_json, strlen(header_json));
@@ -233,7 +232,7 @@ bool jwt_encode_user_id(
         return false;
     }
 
-    /* Payload: {"sub": user_id, "exp": now+3600} */
+    // Payload: {"sub": user_id, "exp": now+3600}
     time_t exp = time(NULL) + 3600;
     char payload_json[256];
     snprintf(payload_json, sizeof payload_json,
@@ -250,7 +249,7 @@ bool jwt_encode_user_id(
         return false;
     }
 
-    /* header.payload */
+    // header.payload
     size_t hp_len = strlen(header_b64) + 1 + strlen(payload_b64) + 1;
     char *hp = (char *)malloc(hp_len);
     if (!hp) { free(header_b64); free(payload_b64); if (err) *err = service_error_validation("OOM"); return false; }
@@ -258,7 +257,7 @@ bool jwt_encode_user_id(
     free(header_b64);
     free(payload_b64);
 
-    /* HMAC-SHA256 */
+    // HMAC-SHA256
     unsigned char sig[32];
     if (!hmac_sha256(secret, hp, sig)) {
         free(hp);

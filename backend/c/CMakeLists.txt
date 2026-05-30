@@ -127,18 +127,24 @@ add_executable(c
         server/include/http_state.h
         server/http_error.c
         server/include/http_error.h
+        server/http_util.c
+        server/include/http_util.h
         server/http_auth.c
         server/include/http_auth.h
         server/http_users.c
         server/include/http_users.h
+        server/http_accounts.c
+        server/include/http_accounts.h
+        server/http_affiliates.c
+        server/include/http_affiliates.h
+        server/http_transactions.c
+        server/include/http_transactions.h
         server/http_router.c
         server/include/http_router.h
         server/http_server.c
         server/include/http_server.h
         server/jwt_utils.c
         server/include/jwt_utils.h
-        server/include/jwt_utils.h
-        server/jwt_utils.c
 )
 
 # ── Include directories ───────────────────────────────────────────────────────

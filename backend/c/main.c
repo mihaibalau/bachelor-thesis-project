@@ -80,10 +80,11 @@ int main(void) {
         return 1;
     }
 
-    /* AffiliateService — aff_repository_from_repo + aff_account_repository_from_repo */
-    AffiliateRepository     aff_port     = aff_repository_from_repo(affiliate_repo);
-    AffSvcAccountRepository aff_acc_port = aff_account_repository_from_repo(account_repo);
-    AffiliateService *affiliate_svc = affiliate_service_new(aff_port, aff_acc_port);
+    /* AffiliateService — affiliate + account + user repository ports */
+    AffiliateRepository     aff_port      = aff_repository_from_repo(affiliate_repo);
+    AffSvcAccountRepository aff_acc_port  = aff_account_repository_from_repo(account_repo);
+    AffSvcUserRepository    aff_user_port = aff_user_repository_from_repo(user_repo);
+    AffiliateService *affiliate_svc = affiliate_service_new(aff_port, aff_acc_port, aff_user_port);
     if (!affiliate_svc) {
         fprintf(stderr, "[error] failed to create AffiliateService\n");
         transaction_service_free(tx_svc);

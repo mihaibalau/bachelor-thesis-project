@@ -279,6 +279,157 @@ bool account_service_open_account(
     return true;
 }
 
+bool account_service_open_account_raw(
+    AccountService *svc,
+    UserId user_id,
+    const char *account_type_str,
+    const char *currency_str,
+    int64_t initial_balance_cents,
+    AccountId *out_id,
+    ServiceError *err
+) {
+    if (!svc || !out_id) {
+        if (err) *err = service_error_validation(
+            "AccountService::open_account_raw: invalid arguments");
+        return false;
+    }
+
+
+    // 1. Parse the raw strings into domain value objects.
+    AccountType account_type;
+    Currency    currency;
+    DomainError derr;
+
+    if (!account_type_from_str(account_type_str, &account_type, &derr)) {
+        if (err) *err = service_error_validation("invalid account_type");
+        return false;
+    }
+    if (!currency_from_str(currency_str, &currency, &derr)) {
+        if (err) *err = service_error_validation("invalid currency");
+        return false;
+    }
+
+    /* 2. Reject negative opening balance. */
+    if (initial_balance_cents < 0) {
+        if (err) *err = service_error_validation(
+            "initial_balance_cents must be >= 0");
+        return false;
+    }
+
+    /* 3. Enforce at-most-one account of a given type for this user. */
+    RepoError rerr;
+    bool exists = false;
+    if (!svc->repo.vtable->exists_by_account_type(
+            svc->repo.ctx, user_id, account_type, &exists, &rerr)) {
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+    if (exists) {
+        char msg[128];
+        snprintf(msg, sizeof msg,
+                 "user already has an account of type '%s'",
+                 account_type_as_str(account_type));
+        if (err) *err = service_error_conflict("account", msg);
+        return false;
+    }
+
+    // 4. Generate a unique IBAN, build the Account and persist it.
+    const int MAX_RETRIES = 5;
+    for (int attempt = 0; attempt < MAX_RETRIES; ++attempt) {
+        IBAN iban;
+        if (!iban_generate(&iban, &derr)) {
+            if (err) *err = service_error_from_domain(&derr);
+            return false;
+        }
+
+        bool iban_taken = false;
+        if (!svc->repo.vtable->exists_by_iban(
+                svc->repo.ctx, iban.value, &iban_taken, &rerr)) {
+            if (err) *err = service_error_from_repo(&rerr);
+            return false;
+        }
+        if (iban_taken) {
+            continue;
+        }
+
+        Account *account = account_create(
+            user_id, account_type, currency, initial_balance_cents, &iban, &derr);
+        if (!account) {
+            if (err) *err = service_error_from_domain(&derr);
+            return false;
+        }
+
+        AccountId new_id;
+        bool ok = svc->repo.vtable->insert(svc->repo.ctx, account, &new_id, &rerr);
+        account_free(account);
+
+        if (ok) {
+            *out_id = new_id;
+            if (err) *err = service_error_ok();
+            return true;
+        }
+
+        /* A NOT_FOUND here is impossible; treat anything else as a real error
+         * unless we still have retries left (assume an IBAN clash). */
+        if (attempt + 1 >= MAX_RETRIES) {
+            if (err) *err = service_error_from_repo(&rerr);
+            return false;
+        }
+    }
+
+    if (err) *err = service_error_conflict(
+        "account", "unable to allocate a unique IBAN after retries");
+    return false;
+}
+
+bool account_service_get_account_availability(
+    AccountService *svc,
+    UserId user_id,
+    AccountAvailability *out,
+    ServiceError *err
+) {
+    if (!svc || !out) {
+        if (err) *err = service_error_validation(
+            "AccountService::get_account_availability: invalid arguments");
+        return false;
+    }
+
+    // Start with everything available, then subtract what the user holds.
+    for (size_t t = 0; t < ACCOUNT_TYPE_COUNT; ++t)
+        for (size_t c = 0; c < CURRENCY_COUNT; ++c)
+            out->available[t][c] = true;
+
+    /*
+     * `open_account` enforces at-most-one account *per account type* for a user
+     * (see exists_by_account_type), regardless of currency. Availability must
+     * mirror that rule: once the user owns ANY account of a given type, every
+     * currency for that type becomes unavailable.
+     */
+    Account **accounts = NULL;
+    size_t    count    = 0;
+    RepoError rerr;
+
+    if (!svc->repo.vtable->list_for_user(
+            svc->repo.ctx, user_id, &accounts, &count, &rerr)) {
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        AccountType t = account_type_get(accounts[i]);
+        if ((size_t)t < ACCOUNT_TYPE_COUNT) {
+            for (size_t c = 0; c < CURRENCY_COUNT; ++c) {
+                out->available[t][c] = false;
+            }
+        }
+        account_free(accounts[i]);
+    }
+    free(accounts);
+
+    if (err) *err = service_error_ok();
+    return true;
+}
+
 bool account_service_get_account(
     AccountService *svc,
     AccountId account_id,

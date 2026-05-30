@@ -1,10 +1,10 @@
-# C Server Layer Reference
+# Rust Server Layer Reference
 
-The **server** layer is the HTTP/API boundary. It accepts requests via **libmicrohttpd**, enforces JWT auth on private routes, parses JSON, calls the **service** layer, and serializes responses. It contains **no business logic** — parsing, routing, auth extraction, and JSON mapping only.
+The **server** layer is the HTTP/API boundary. It accepts requests, enforces JWT auth on private routes, deserializes JSON, calls the **service** layer, and serializes responses. It contains **no business logic** — parsing, routing, auth extraction, and JSON mapping only.
 
 Both backends (Rust and C) expose the same routes, request bodies, response shapes, and error codes so they can run behind one load balancer with one frontend and one database.
 
-**Stack:** [GNU libmicrohttpd](https://www.gnu.org/software/libmicrohttpd/) (MHD) + [jansson](https://github.com/akheron/jansson) for JSON.
+**Stack:** [axum](https://github.com/tokio-rs/axum) + `tower-http` (CORS, tracing).
 
 ---
 
@@ -12,223 +12,216 @@ Both backends (Rust and C) expose the same routes, request bodies, response shap
 
 ```
                 ┌──────────────────────────────┐
-                │           main.c             │
+                │         main.rs              │
                 │  (Db, repos, services,       │
-                │   AppState, http_server)     │
+                │   AppState, create_router)   │
                 └──────────────┬───────────────┘
                                │
                 ┌──────────────▼───────────────┐
-                │      http_server.c           │
-                │  (MHD_start_daemon, bind)    │
-                └──────────────┬───────────────┘
-                               │
-                ┌──────────────▼───────────────┐
-                │      http_router.c           │
-                │  prefix dispatch to:         │
-                │  users / accounts /          │
-                │  affiliates / transactions   │
+                │      server/router.rs        │
+                │  nest /api/{users,accounts,  │
+                │  affiliates,transactions}    │
                 └──────┬───────────┬───────────┘
                        │           │
        ┌───────────────▼──┐   ┌────▼────────────────────────────┐
-       │  http_auth.c     │   │  http_{users,accounts,          │
-       │  jwt_utils.c     │   │  affiliates,transactions}.c    │
+       │  server/auth.rs  │   │  server/routes/{users,accounts, │
+       │  require_auth    │   │  affiliates,transactions}.rs    │
        └──────────────────┘   └──────────────┬────────────────────┘
-                                             │
-                              ┌──────────────▼──────────────┐
-                              │  http_util.c / http_error.c │
-                              └──────────────┬──────────────┘
                                              │
                               ┌──────────────▼──────────────┐
                               │  service/ (use-cases)       │
                               └─────────────────────────────┘
 ```
 
-Every request flows: **MHD callback** → `http_request_handler` → resource `*_dispatch` → optional `http_require_auth` → handler → service call → `http_send_json` / `http_send_service_error`.
-
 ---
 
 ## Module reference
 
-Each file below lists public functions with purpose, behaviour, and what the handler delegates to the service layer. **No business rules** live here — only HTTP transport concerns.
+Each file below lists public items with purpose, behaviour, and what the handler delegates to the service layer. **No business rules** live here — only HTTP concerns.
 
 ---
 
-### `http_server.h` / `http_server.c`
+### `server/router.rs`
 
-The entry point of the HTTP layer — wraps libmicrohttpd daemon lifecycle.
-
-- `bool http_server_start(struct HttpServer *srv, AppState *state, unsigned short port);`
-  - Purpose: Bind and start the MHD daemon.
-  - Params: `srv` – server struct to fill; `state` – passed as `cls` to every callback; `port` – TCP port (6767 in `main.c`).
-  - Behaviour: Calls `MHD_start_daemon` with `http_request_handler`, `MHD_USE_SELECT_INTERNALLY`, listening on `0.0.0.0`.
-  - Returns: `true` on success, `false` if daemon failed to start.
-
-- `void http_server_stop(struct HttpServer *srv);`
-  - Purpose: Graceful shutdown.
-  - Behaviour: `MHD_stop_daemon` if handle non-null.
-
----
-
-### `http_router.h` / `http_router.c`
-
-Top-level URL dispatch — mirrors axum `.nest("/api/…")`.
-
-- `enum MHD_Result http_request_handler(void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version, const char *upload_data, size_t *upload_data_size, void **con_cls);`
-  - Purpose: Single MHD access handler for all routes.
+- `pub fn create_router(state: Arc<AppState>) -> Router`
+  - Purpose: Assemble the full application router.
   - Behaviour:
-    - Uses `match_prefix` for path-boundary-safe matching (prevents `/api/accountsX` false positives).
-    - Strips prefix and forwards **subpath** to the resource dispatcher.
-    - Unmatched → `http_send_not_found`.
-  - Dispatch table:
-    - `/api/users` → `http_users_dispatch`
-    - `/api/accounts` → `http_accounts_dispatch`
-    - `/api/affiliates` → `http_affiliates_dispatch`
-    - `/api/transactions` → `http_transactions_dispatch`
+    - Nests `routes::users::router`, `routes::accounts::router`, `routes::affiliates::router`, `routes::transactions::router` under `/api/...`.
+    - Applies `CorsLayer::permissive()` and `TraceLayer::new_for_http()`.
+    - Shares `AppState` via `.with_state(state)`.
 
 ---
 
-### `http_state.h` / `http_state.c`
+### `server/state.rs`
 
-Shared runtime dependency container.
+- `pub struct AppState`
+  - Fields: `user_svc: Arc<UserSvc>`, `account_svc: Arc<AccountSvc>`, `tx_svc: Arc<TxSvc>`, `affiliate_svc: Arc<AffiliateSvc>`, `jwt_secret: String`.
+  - Purpose: Dependency injection container passed to every handler and middleware.
 
-- `typedef struct AppState { UserService *user_svc; AccountService *account_svc; TransactionService *tx_svc; AffiliateService *affiliate_svc; char jwt_secret[JWT_SECRET_MAX]; } AppState;`
-  - Purpose: Same role as Rust `Arc<AppState>` — services + JWT secret.
+- Type aliases:
+  - `UserSvc = UserService<UserRepo, AccountRepo>`
+  - `AccountSvc = AccountService<AccountRepo>`
+  - `TxSvc = TransactionService<TransactionRepo, AccountRepo>`
+  - `AffiliateSvc = AffiliateService<AffiliateRepo, AccountRepo, UserRepo>`
 
-- `void app_state_init(AppState *state, UserService *user_svc, AccountService *account_svc, TransactionService *tx_svc, AffiliateService *affiliate_svc, const char *jwt_secret);`
-  - Purpose: Populate state at startup in `main.c` (copies secret into fixed buffer).
+- `impl AppState { pub fn new(user_svc, account_svc, tx_svc, affiliate_svc, jwt_secret) -> Self }`
+  - Purpose: Construct state in `main.rs` after wiring repos and services.
 
 ---
 
-### `http_auth.h` / `http_auth.c`
+### `server/auth.rs`
 
-JWT gate for private routes.
-
-- `bool http_require_auth(AppState *state, struct MHD_Connection *conn, UserId *out_user_id, char *out_tag, size_t tag_cap, ServiceError *err);`
-  - Purpose: Extract and validate Bearer token before protected handlers run.
+- `pub async fn require_auth(State(state), mut req, next) -> Result<Response, StatusCode>`
+  - Purpose: JWT middleware for all private route groups.
   - Behaviour:
-    1. Read `Authorization` header from MHD connection.
-    2. Require `Bearer ` prefix.
-    3. Call `jwt_decode_user_id`.
-    4. Fill `*out_user_id` and optional tag buffer.
-  - Returns: `true` on success; `false` + `SERVICE_ERROR_VALIDATION` or forbidden-style error on failure.
+    1. Read `Authorization` header; require `Bearer <token>` prefix.
+    2. Decode JWT with `jsonwebtoken` + `DecodingKey::from_secret(jwt_secret)`.
+    3. Insert decoded `Claims` into `req.extensions_mut()`.
+    4. Call `next.run(req)`.
+  - Errors: Returns bare `401 Unauthorized` (no JSON body) if header missing or token invalid/expired.
 
 ---
 
-### `jwt_utils.h` / `jwt_utils.c`
+### `server/error.rs`
 
-JWT creation and verification (HS256).
+- `struct ErrorBody { status: u16, code: &'static str, message: String }` – JSON error envelope.
 
-- `bool jwt_decode_user_id(const char *token, const char *secret, UserId *out_user_id, char *out_tag, size_t tag_cap);`
-  - Purpose: Verify signature, expiry, and parse `sub` + `tag` claims.
-  - Returns: `false` on any crypto or format failure.
+- `pub struct ApiError(pub ServiceError)` – newtype wrapper for `IntoResponse`.
 
-- `bool jwt_encode_user_id(UserId user_id, const char *tag, const char *secret, char *out_token, size_t out_cap);`
-  - Purpose: Issue token after successful login.
-  - Behaviour: 24-hour expiry; same claim shape as Rust `Claims`.
+- `impl From<ServiceError> for ApiError`
 
----
+- `impl IntoResponse for ApiError`
+  - Purpose: Map every `ServiceError` variant to HTTP status + `{ status, code, message }` JSON (see HTTP API section below).
 
-### `http_error.h` / `http_error.c`
-
-Maps service errors to HTTP responses.
-
-- `typedef struct { int status; const char *code; const char *message; } ApiErrorBody;`
-
-- `ApiErrorBody http_error_from_service_error(const ServiceError *err);`
-  - Purpose: One-for-one mapping with Rust `ApiError::into_response`.
-  - Behaviour: Sets `status`, `code` string, copies `message` from `ServiceError`.
+- `pub type ApiResult<T> = Result<T, ApiError>` – standard handler return type.
 
 ---
 
-### `http_util.h` / `http_util.c`
+### `server/routes/users.rs`
 
-Shared response and body-buffer helpers.
+#### Router
 
-- `BodyBuffer` – `{ char *data; size_t len; size_t cap; }` for accumulating POST/PATCH bodies across MHD upload callbacks.
+- `pub fn router(state: Arc<AppState>) -> Router`
+  - Public routes: `POST /`, `POST /login`.
+  - Private routes: `GET /{id}` with `require_auth` middleware.
 
-- `void body_buffer_free(BodyBuffer *bb);`
-- `bool body_buffer_append(BodyBuffer *bb, const char *data, size_t size);`
-  - Purpose: Growable buffer; returns `false` on OOM.
+#### Request / response DTOs
 
-- `void add_cors_headers(struct MHD_Response *res);`
-  - Purpose: Permissive CORS (mirrors Rust `CorsLayer::permissive()`).
+- `LoginRequest`, `RegisterUserRequest` – deserialize JSON bodies.
+- `LoginResponse { token, user_id }`, `RegisterUserResponse { user_id }`
+- `UserResponse`, `AccountResponse`, `UserWithAccountsResponse` – serialize outbound JSON.
 
-- `enum MHD_Result http_send_json(struct MHD_Connection *conn, int status, const char *json);`
-  - Purpose: Respond with `Content-Type: application/json`.
+#### Handlers
 
-- `enum MHD_Result http_send_empty(struct MHD_Connection *conn, int status);`
-  - Purpose: 200 responses with no body (affiliate create/delete/patch).
+- `async fn login_user(State, Json<LoginRequest>) -> ApiResult<Json<LoginResponse>>`
+  - Delegates: `user_svc.login_user(LoginUserCommand, &jwt_secret)`.
+  - Returns: JWT token + user id. No auth required.
 
-- `enum MHD_Result http_send_service_error(struct MHD_Connection *conn, const ServiceError *err);`
-  - Purpose: Serialize `{ status, code, message }` JSON error envelope.
+- `async fn register_user(State, Json<RegisterUserRequest>) -> ApiResult<Json<RegisterUserResponse>>`
+  - Parses optional `birth_date` (`YYYY-MM-DD`) in route layer.
+  - Delegates: `user_svc.register_user(RegisterUserCommand)`.
+  - Returns: `{ user_id }`. No auth required.
 
-- `enum MHD_Result http_send_not_found(struct MHD_Connection *conn);`
-  - Purpose: 404 for unknown routes.
-
----
-
-### `http_users.h` / `http_users.c`
-
-User registration, login, profile.
-
-- `enum MHD_Result http_users_dispatch(AppState *state, struct MHD_Connection *conn, const char *subpath, const char *method, const char *upload_data, size_t *upload_data_size, void **con_cls);`
-  - Routes:
-    - `POST /` (empty subpath) → register — public; parses JSON; calls `user_service_register_user`.
-    - `POST /login` → login — public; calls `user_service_login_user` then `jwt_encode_user_id`.
-    - `GET /{id}` → profile — private via `http_require_auth`; rejects if `id != token sub`; calls `user_service_get_user_with_accounts`.
-
-- `enum MHD_Result http_users_get_user_with_accounts(...)` – builds JSON from `UserWithAccounts`.
-- `enum MHD_Result http_users_not_found(...)` – legacy 404 helper.
+- `pub async fn get_user_with_accounts(State, Path(id), Extension(claims)) -> ApiResult<Json<UserWithAccountsResponse>>`
+  - Auth: rejects with `403 Forbidden` if `claims.sub != id`.
+  - Delegates: `user_svc.get_user_with_accounts(UserId)`.
+  - Maps domain user + accounts into response DTOs (strips password hash).
 
 ---
 
-### `http_accounts.h` / `http_accounts.c`
+### `server/routes/accounts.rs`
 
-Account open, get, availability.
+#### Router
 
-- `enum MHD_Result http_accounts_dispatch(...);`
-  - All routes require auth.
-  - **Route order:** literal `"/availability"` matched before numeric `/{id}` parse.
-  - `POST /` → `account_service_open_account_raw`; reload account for JSON response.
-  - `GET /availability` → `account_service_get_account_availability`; shape matrix into nested JSON.
-  - `GET /{id}` → parse id with `strtoll` (400 on malformed); ownership check; `account_service_get_account`.
-  - Malformed path id → **400** `bad_request` (matches axum `Path<i64>` rejection).
+- `pub fn router(state: Arc<AppState>) -> Router`
+  - All routes private (`require_auth`).
+  - **Route order matters**: `/availability` registered **before** `/{id}` so `"availability"` is not parsed as an integer id.
+
+#### Request / response DTOs
+
+- `OpenAccountRequest { account_type, currency, initial_balance_cents }`
+- `AccountResponse { id, account_type, currency, balance_cents, iban }`
+- `AccountAvailabilityResponse { types: Vec<AccountTypeAvailability> }` with nested `CurrencyAvailability`.
+
+#### Handlers
+
+- `async fn open_account(State, Extension(claims), Json(body)) -> ApiResult<Json<AccountResponse>>`
+  - Delegates: `account_svc.open_account_raw(user_id, strings…)` then `get_account` to build response.
+  - No IBAN in request — generated in service.
+
+- `async fn get_account(State, Path(id), Extension(claims)) -> ApiResult<Json<AccountResponse>>`
+  - Delegates: `account_svc.get_account`.
+  - Auth: returns `404 not_found` if `account.user_id != claims.sub` (does not leak existence).
+
+- `async fn get_availability(State, Extension(claims)) -> ApiResult<Json<AccountAvailabilityResponse>>`
+  - Delegates: `account_svc.get_account_availability`.
+  - Shapes service map into UI-friendly nested JSON with `has_any_available` per type.
 
 ---
 
-### `http_affiliates.h` / `http_affiliates.c`
+### `server/routes/affiliates.rs`
 
-Affiliate CRUD, list, resolve-target.
+#### Router
 
-- `enum MHD_Result http_affiliates_dispatch(...);`
-  - `GET /` → parse query params into `ListAffiliatesParams`; `list_affiliates_view`.
-  - `POST /` → create affiliate.
-  - `POST /resolve-target` → `identifier_type` + `identifier`; tag → `resolve_target_by_tag`; phone → validation error.
-  - `GET/PATCH/DELETE /{sub_account_id}` → get view / rename / delete.
+- `pub fn router(state: Arc<AppState>) -> Router` – all routes private.
+
+#### Key DTOs
+
+- `CreateAffiliateRequest { recipient_sub_account_id, nickname }`
+- `ResolveAffiliateTargetRequest { identifier_type, identifier }` – `identifier_type` enum: `tag` | `phone`.
+- `ListAffiliatesQuery` – `page`, `page_size`, `search`, `currency`, `sort`.
+- Response types mirror service views (`AffiliateView`, paginated list, resolve-target currencies).
+
+#### Handlers
+
+- `async fn list_affiliates(...)` – builds `ListAffiliatesParams`; delegates `list_affiliates_view`.
+- `async fn create_affiliate(...)` – delegates `create_affiliate`.
+- `async fn get_affiliate(Path(sub_account_id), ...)` – delegates `get_affiliate_view`.
+- `async fn update_affiliate_nickname(PATCH, ...)` – delegates `rename_affiliate`; empty 200 body.
+- `async fn delete_affiliate(DELETE, ...)` – delegates `delete_affiliate`; empty 200 body.
+- `async fn resolve_affiliate_target(...)` – `identifier_type::Tag` → `resolve_target_by_tag`; `Phone` → validation error (not implemented yet).
 
 ---
 
-### `http_transactions.h` / `http_transactions.c`
+### `server/routes/transactions.rs`
 
-All money movement and analytics endpoints.
+#### Router
 
-- `enum MHD_Result http_transactions_dispatch(...);`
-  - POST handlers parse JSON and call matching `transaction_service_record_*_for_user`; return bare integer transaction id JSON.
-  - `GET /recent` → query `account_id`, optional `limit`.
-  - `GET /statement` → query params forwarded to `compute_account_statement_for_user_from_strings`.
-  - `GET /summary/monthly` → compute UTC month bounds in handler (agreed exception); call `compute_user_statistics` with window; build cumulative daily spending array.
+- `pub fn router(state: Arc<AppState>) -> Router` – all routes private.
+
+#### Request DTOs (examples)
+
+- `DepositRequest { account_id, amount }` – amount in whole units.
+- `SendRequest { from_account_id, recipient_account_id, value_cents, message }`
+- `PaymentRequest { from_account_id, amount, category, merchant_name, note }`
+- Query types: `RecentQuery`, `StatementQuery`, `UserMonthlySummaryQuery`.
+
+#### Handlers
+
+- `record_deposit` / `record_withdrawal` / `record_send` / `record_transfer` / `record_payment`
+  - Each parses JSON, calls matching `*_for_user` on `tx_svc`, returns `{ "id": <TransactionId> }`.
+
+- `get_recent_transactions(Query)` – delegates `list_recent_for_user`; serializes transaction list.
+
+- `get_account_statement(Query)` – delegates `compute_account_statement_for_user_from_strings`; maps entries to RFC3339 timestamps.
+
+- `get_user_monthly_summary(Query)`
+  - **Route-layer shaping (agreed exception):** computes current UTC calendar-month `[start, end]` bounds.
+  - Delegates: `compute_user_statistics(user_id, per_account_limit, Some(start), Some(end))`.
+  - Builds `daily_cumulative_spending` from signed per-day nets (`value.min(0).abs()` for outgoing).
+  - All response totals reflect the current month only.
 
 ---
 
 ## Request lifecycle
 
 ```
-Client → MHD daemon (http_request_handler)
-       → resource *_dispatch (BodyBuffer for POST/PATCH body chunks)
-       → [http_require_auth on private routes]
-       → jansson parse → service *_service_* call
-       → http_send_json / http_send_service_error / http_send_empty
-       → add_cors_headers on every response
+Client → axum Router
+       → [require_auth middleware on private nests]
+       → handler: extract Path / Query / Extension(Claims) / Json body
+       → AppState.{user,account,tx,affiliate}_svc method
+       → Ok(Json(dto))  or  Err(ApiError(ServiceError))
+       → ApiError::into_response → JSON error envelope
 ```
 
 ---
@@ -785,14 +778,11 @@ Internal transfers between the user's own accounts are deduplicated and net to z
 ## Request lifecycle
 
 ```
-Client → MHD daemon → http_request_handler (prefix match)
-       → *_dispatch (body buffering via BodyBuffer on POST/PATCH)
-       → [http_require_auth on private routes]
-       → parse JSON with jansson → service call
-       → http_send_json / http_send_service_error / http_send_empty
+Client → axum router → [require_auth on private routes]
+       → handler: parse Path/Query/Json
+       → service call
+       → Ok(Json(...)) or ApiError (IntoResponse)
 ```
-
-MHD may invoke the callback multiple times per request while uploading a body; `BodyBuffer` accumulates chunks until `*upload_data_size == 0`.
 
 ---
 
@@ -800,10 +790,11 @@ MHD may invoke the callback multiple times per request while uploading a body; `
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DB_CONN` | libpq connection string | local dev DSN in `main.c` |
-| `JWT_SECRET` | HMAC secret for JWT | dev default in `main.c` |
+| `DATABASE_URL` | PostgreSQL connection string | local dev DSN in `main.rs` |
+| `JWT_SECRET` | HMAC secret for JWT | dev default in `main.rs` |
+| `RUST_LOG` | Tracing filter | `info` |
 
-Server listens on port **6767** (hard-coded in `main.c`). Press ENTER to stop.
+Server listens on `0.0.0.0:6767` (see `main.rs`).
 
 ---
 
@@ -813,16 +804,3 @@ Server listens on port **6767** (hard-coded in `main.c`). Press ENTER to stop.
 - Enums serialize as PascalCase strings (`Regular`, `RON`, `Deposit`, …).
 - Timestamps are RFC3339 (`recorded_on`); dates are `YYYY-MM-DD` (`birth_date`).
 - Always send `Authorization: Bearer <token>` on private routes.
-- CORS headers are added on every response (`add_cors_headers`).
-
----
-
-## Dependencies
-
-| Layer | Used for |
-|-------|----------|
-| `service/` | All business logic |
-| `domain/` | Value types referenced in JSON mapping |
-| libmicrohttpd | HTTP server |
-| jansson | JSON parse/serialize |
-| libpq (via `db/`) | Never called directly from server code |

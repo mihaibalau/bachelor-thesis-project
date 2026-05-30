@@ -1,18 +1,46 @@
 # Rust DB Layer Reference
 
-Short technical reference for the Rust database layer. Each section lists the file, purpose, and public functions with signatures, parameters, and return value.
+Short technical reference for the Rust database layer. Each section lists the file, purpose, and public functions with signatures, parameters, behaviour, and return values.
+
+The DB layer owns all SQL and maps rows to domain types. It never contains business rules — those live in `domain/` and `service/`.
 
 ---
 
-## Module: db/errors.rs
+## Module: `db/mod.rs`
+
+Thin wrapper around a shared `sqlx::PgPool`.
+
+### Types
+
+- `pub struct Db { pool: PgPool }` – cloneable handle shared by all repositories.
+
+### Public methods
+
+- `pub async fn new(database_url: &str) -> Result<Self, sqlx::Error>`
+  - Purpose: Create a connection pool from a PostgreSQL URL.
+  - Params: `database_url` – standard Postgres connection string.
+  - Returns: `Db` on success.
+  - Errors: Propagates SQLx pool creation failures.
+
+- `pub fn pool(&self) -> &PgPool`
+  - Purpose: Borrow the underlying pool for `sqlx::query!` calls inside repos.
+
+- `pub async fn ping(&self) -> Result<(), sqlx::Error>`
+  - Purpose: Health-check query (`SELECT 1`).
+
+---
+
+## Module: `db/errors.rs`
 
 Repository-layer error type mirroring domain `DomainError` with DB, not-found, and domain variants.
 
 ### Types
+
 - `pub enum RepoError { Db(sqlx::Error), NotFound(&'static str), Domain(DomainError) }`
-- `pub type RepoResult<T> = Result<T, RepoError>;`
+- `pub type RepoResult<T> = Result<T, RepoError>`
 
 ### Functions / impls
+
 - `impl RepoError { pub fn not_found(entity: &'static str) -> Self }`
   - Purpose: Convenience constructor for a not-found error for a given entity.
   - Params: `entity` – static entity name (e.g. `"user"`).
@@ -36,14 +64,16 @@ Repository-layer error type mirroring domain `DomainError` with DB, not-found, a
 
 ---
 
-## Module: db/account_repo.rs
+## Module: `db/account_repo.rs`
 
-Repository for `accounts` table. Maps rows to domain `Account` and exposes CRUD plus existence checks.
+Repository for the `accounts` table. Maps rows to domain `Account` and exposes CRUD plus existence checks.
 
 ### Types
+
 - `pub struct AccountRepo { db: Db }` – repository bound to an application `Db` wrapper.
 
 ### Public methods
+
 - `pub fn new(db: Db) -> Self`
   - Purpose: Construct a repository bound to the given database handle.
   - Params: `db` – database abstraction providing a `sqlx::PgPool` (via `pool()`).
@@ -71,12 +101,12 @@ Repository for `accounts` table. Maps rows to domain `Account` and exposes CRUD 
   - Purpose: Insert a new account without id and return generated id.
   - Params: `account` – domain object, must not have an id set.
   - Behaviour: Validates that `account.id().is_none()`, then inserts `user_id`, `account_type`, `currency`, `balance_cents`, `iban` and returns `AccountId` from `RETURNING id`.
-  - Errors: Returns domain validation error if id is already set; DB errors from SQLx.
+  - Errors: Returns domain validation error if id is already set; DB errors from SQLx (including unique violations on `iban` or `(user_id, account_type)`).
 
 - `pub async fn update(&self, account: &Account) -> Result<(), RepoError>`
-  - Purpose: Update an existing account, including all fields.
+  - Purpose: Update an existing account, including `balance_cents` after a transaction.
   - Params: `account` – domain object that must carry a valid id.
-  - Behaviour: Validates id presence, then runs `UPDATE accounts SET ... WHERE id = $6`. If `rows_affected() == 0` returns not-found.
+  - Behaviour: Validates id presence, then runs `UPDATE accounts SET user_id = $1, account_type = $2, currency = $3, balance_cents = $4, iban = $5 WHERE id = $6`. If `rows_affected() == 0` returns not-found.
   - Errors: `RepoError::Domain` if missing id, `RepoError::Db` on DB issues, `RepoError::NotFound("account")` if no matching row.
 
 - `pub async fn delete(&self, account_id: AccountId) -> Result<(), RepoError>`
@@ -92,26 +122,36 @@ Repository for `accounts` table. Maps rows to domain `Account` and exposes CRUD 
   - Errors: Only DB-level errors.
 
 - `pub async fn exists_by_account_type(&self, user_id: UserId, account_type: AccountType) -> Result<bool, RepoError>`
-  - Purpose: Check if a user already has an account of the given type.
+  - Purpose: Check if a user already has an account of the given type (any currency).
   - Params: `user_id` – owner; `account_type` – domain enum.
   - Behaviour: Executes `SELECT EXISTS (SELECT 1 FROM accounts WHERE account_type = $1 AND user_id = $2)` and returns `true` if at least one row exists.
   - Errors: Only DB-level errors.
 
+- `pub async fn list_type_currency_pairs(&self, user_id: UserId) -> Result<Vec<(AccountType, Currency)>, RepoError>`
+  - Purpose: Return every `(account_type, currency)` pair the user currently owns.
+  - Params: `user_id` – owner id.
+  - Behaviour: Executes `SELECT account_type, currency FROM accounts WHERE user_id = $1`, parses enum strings from DB rows.
+  - Used by: `AccountService::get_account_availability` to determine which account **types** are already taken.
+  - Errors: DB errors or domain validation if stored enum strings are invalid.
+
 ### Mapping helper
+
 - `impl TryFrom<AccountRow> for Account`
   - Purpose: Convert raw DB row into domain `Account`.
   - Behaviour: Wraps ids into `AccountId`/`UserId`, parses `account_type` and `currency` enums and `IBAN`, then calls `Account::rehydrate`.
 
 ---
 
-## Module: db/user_repo.rs
+## Module: `db/user_repo.rs`
 
-Repository for `users` table. Handles lookups by id, email, tag and full insert/update/delete for domain `User`.
+Repository for the `users` table. Handles lookups by id, email, tag and full insert/update/delete for domain `User`.
 
 ### Types
+
 - `pub struct UserRepo { db: Db }` – repository bound to `Db`.
 
 ### Public methods
+
 - `pub fn new(db: Db) -> Self`
   - Purpose: Create a user repository sharing the given `Db`.
   - Params: `db` – database handle.
@@ -154,20 +194,23 @@ Repository for `users` table. Handles lookups by id, email, tag and full insert/
   - Errors: DB or not-found.
 
 ### Mapping helper
+
 - `impl TryFrom<UserRow> for User`
   - Purpose: Convert `UserRow` into domain `User`.
   - Behaviour: Wraps `id` into `UserId`, parses `Email`, and calls `User::rehydrate` with all fields.
 
 ---
 
-## Module: db/transaction_repo.rs
+## Module: `db/transaction_repo.rs`
 
-Repository for `transactions` table. Uses `chrono::DateTime<Utc>` for `recorded_on`, mirroring DB timestamp with time zone.
+Repository for the `transactions` table. Uses `chrono::DateTime<Utc>` for `recorded_on`, mirroring DB `timestamp with time zone`.
 
 ### Types
+
 - `pub struct TransactionRepo { db: Db }` – repository using a `Db`.
 
 ### Public methods
+
 - `pub fn new(db: Db) -> Self`
   - Purpose: Create transaction repository bound to `Db`.
   - Params: `db` – database handle.
@@ -184,6 +227,7 @@ Repository for `transactions` table. Uses `chrono::DateTime<Utc>` for `recorded_
   - Params: `tx` – domain object, must have `id == None`.
   - Behaviour: Validates missing id, then inserts `from_account_id`, `to_account_id`, `transaction_type`, `value_cents`, `recorded_on`, `description` and returns new `TransactionId`.
   - Errors: Domain validation on existing id, DB errors.
+  - Note: Balance updates happen in the **service** layer via `AccountRepo::update` before this insert is called.
 
 - `pub async fn list_for_account(&self, account_id: AccountId, limit: i64, offset: i64) -> Result<Vec<Transaction>, RepoError>`
   - Purpose: List paginated transactions where the account is either sender or receiver.
@@ -192,20 +236,23 @@ Repository for `transactions` table. Uses `chrono::DateTime<Utc>` for `recorded_
   - Errors: DB errors or domain mapping failures.
 
 ### Mapping helper
+
 - `impl TryFrom<TransactionRow> for Transaction`
   - Purpose: Convert raw DB row into domain `Transaction`.
   - Behaviour: Wraps ids into `TransactionId`/`AccountId`, parses `transaction_type` enum, and calls `Transaction::rehydrate`.
 
 ---
 
-## Module: db/affiliate_repo.rs
+## Module: `db/affiliate_repo.rs`
 
-Repository for `affiliates` table with composite key `(owner_user_id, recipient_sub_account_id)` and domain `Affiliate`.
+Repository for the `affiliates` table with composite key `(owner_user_id, recipient_sub_account_id)` and domain `Affiliate`.
 
 ### Types
+
 - `pub struct AffiliateRepo { db: Db }` – repository bound to `Db`.
 
 ### Public methods
+
 - `pub fn new(db: Db) -> Self`
   - Purpose: Create affiliate repository using an existing `Db`.
   - Params: `db` – database handle.
@@ -248,6 +295,7 @@ Repository for `affiliates` table with composite key `(owner_user_id, recipient_
   - Errors: Only DB-level errors.
 
 ### Mapping helper
+
 - `impl TryFrom<AffiliateRow> for Affiliate`
   - Purpose: Convert raw `AffiliateRow` into domain `Affiliate` via its constructor.
 

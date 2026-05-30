@@ -351,18 +351,34 @@ async fn get_user_monthly_summary(
     let user_id = UserId::from(claims.sub);
     let per_account_limit = q.per_account_limit.unwrap_or(500);
 
-    let stats = state
-        .tx_svc
-        .compute_user_statistics(user_id, per_account_limit)
-        .await
-        .map_err(ApiError::from)?;
+    // Current-month "shaping" lives in the route (the agreed exception). We
+    // compute the [start, end] bounds of the current calendar month (UTC) and
+    // pass them to the service so EVERY aggregate — totals, per-type and the
+    // daily series — reflects only the current month.
+    use chrono::{Datelike, Duration, TimeZone};
 
-    // Filtrăm doar zilele din luna curentă
-    let now = Utc::now().date_naive();
+    let now = Utc::now();
     let current_year = now.year();
     let current_month = now.month();
 
-    use chrono::Datelike;
+    let month_start = Utc
+        .with_ymd_and_hms(current_year, current_month, 1, 0, 0, 0)
+        .unwrap();
+    let (next_year, next_month) = if current_month == 12 {
+        (current_year + 1, 1)
+    } else {
+        (current_year, current_month + 1)
+    };
+    let next_month_start = Utc
+        .with_ymd_and_hms(next_year, next_month, 1, 0, 0, 0)
+        .unwrap();
+    let month_end = next_month_start - Duration::seconds(1);
+
+    let stats = state
+        .tx_svc
+        .compute_user_statistics(user_id, per_account_limit, Some(month_start), Some(month_end))
+        .await
+        .map_err(ApiError::from)?;
 
     let mut daily_points: Vec<(NaiveDate, i64)> = stats
         .per_day_totals
@@ -376,7 +392,9 @@ async fn get_user_monthly_summary(
     let mut daily_cumulative = Vec::with_capacity(daily_points.len());
 
     for (date, value) in daily_points {
-        let spending = value.min(0).abs(); // doar outgoing ca spending
+        // `value` is the SIGNED net for the day (outgoing makes it negative), so
+        // the negative part is the day's spending. Net-incoming days contribute 0.
+        let spending = value.min(0).abs();
         cumulative += spending;
         daily_cumulative.push(DailyCumulativeSpendingPoint {
             date: date.to_string(),

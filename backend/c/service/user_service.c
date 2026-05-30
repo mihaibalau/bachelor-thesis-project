@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <argon2.h>
+#include <openssl/rand.h>
 #include "account.h"
 #include "account_repo.h"
 #include "email.h"
@@ -12,6 +13,59 @@
 #include "user.h"
 #include "user_repo.h"
 #include "include/service_error.h"
+
+/* ── Password hashing (Argon2id via libargon2) ───────────────────────────── */
+/*
+ * Mirrors the Rust UserService::register_user, which hashes the password
+ * *inside the service* (on a blocking thread) rather than in the HTTP layer.
+ * Keeping hashing here means the server layer never performs cryptographic /
+ * business computation — it only (de)serializes and routes.
+ *
+ * Format: PHC encoded string "$argon2id$v=19$m=...,t=...,p=...$salt$hash",
+ * exactly what the Rust `argon2` crate produces and what login verifies.
+ */
+
+#define ARGON_T_COST       3            /* time cost (iterations)      */
+#define ARGON_M_COST       (64 * 1024)  /* memory cost in KiB (64 MiB) */
+#define ARGON_PARALLELISM  1            /* lanes                       */
+#define ARGON_HASH_LEN     32           /* bytes of hash               */
+#define ARGON_SALT_LEN     16           /* bytes of salt               */
+#define ARGON_ENCODED_LEN  128
+
+static bool hash_password(const char *password, char out_encoded[ARGON_ENCODED_LEN]) {
+    uint8_t salt[ARGON_SALT_LEN];
+
+    if (RAND_bytes(salt, sizeof(salt)) != 1) {
+        return false;
+    }
+
+    size_t encoded_len = argon2_encodedlen(
+        ARGON_T_COST,
+        ARGON_M_COST,
+        ARGON_PARALLELISM,
+        ARGON_SALT_LEN,
+        ARGON_HASH_LEN,
+        Argon2_id
+    );
+    if (encoded_len + 1 > ARGON_ENCODED_LEN) {
+        return false;
+    }
+
+    int rc = argon2id_hash_encoded(
+        ARGON_T_COST,
+        ARGON_M_COST,
+        ARGON_PARALLELISM,
+        password,
+        (uint32_t)strlen(password),
+        salt,
+        sizeof(salt),
+        ARGON_HASH_LEN,
+        out_encoded,
+        ARGON_ENCODED_LEN
+    );
+
+    return rc == ARGON2_OK;
+}
 
 /* UserRepo adapter */
 
@@ -250,7 +304,20 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    /* 4. Construct the domain User. All heavy validation happens here. */
+    /* 4. Hash the password (Argon2id) — business logic kept in the service,
+     *    mirroring Rust's register_user which hashes via spawn_blocking. */
+    if (!cmd->password) {
+        if (err) *err = service_error_validation("password is required");
+        return false;
+    }
+
+    char password_hash[ARGON_ENCODED_LEN];
+    if (!hash_password(cmd->password, password_hash)) {
+        if (err) *err = service_error_internal("password hashing failed");
+        return false;
+    }
+
+    /* 5. Construct the domain User. All heavy validation happens here. */
 
     User *user = user_create(
         cmd->tag,
@@ -259,7 +326,7 @@ bool user_service_register_user(UserService *svc,
         cmd->last_name,
         cmd->phone_opt,
         cmd->birth_date_opt,
-        cmd->password_hash,
+        password_hash,
         &derr
     );
     if (!user) {

@@ -1,20 +1,27 @@
 # C DB Layer Reference
 
-Short technical reference for the C database layer. Each section lists the file, purpose, and public functions with signatures, parameters, and return value.
+Short technical reference for the C database layer. Each section lists the file, purpose, and public functions with signatures, parameters, behaviour, and return values.
+
+The DB layer owns all SQL (via libpq) and maps rows to domain types. It never contains business rules — those live in `domain/` and `service/`.
+
+This layer mirrors the Rust DB layer (`backend/rust/src/db/`) function-for-function.
 
 ---
 
-## Module: db.h / db.c
+## Module: `db.h` / `db.c`
 
 Low-level wrapper around libpq `PGconn` and `PGresult` for connecting to PostgreSQL and executing parametrized text queries.
 
 ### Types
+
 - `typedef struct Db Db;` – opaque handle for a PostgreSQL connection.
 
 ### Functions
+
 - `bool db_connect(const char *conninfo, Db **out, RepoError *err);`
   - Purpose: Open a new PostgreSQL connection using a libpq connection string.
-  - Params: `conninfo` – libpq connection string; `out` – receives allocated `Db*`; `err` – optional `RepoError` output.
+  - Params: `conninfo` – libpq connection string (e.g. `host=… dbname=… user=…`); `out` – receives allocated `Db*`; `err` – optional `RepoError` output.
+  - Behaviour: Calls `PQconnectdb`; on failure writes connection error message into `err`.
   - Returns: `true` on success, `false` on failure.
 
 - `void db_close(Db *db);`
@@ -28,24 +35,26 @@ Low-level wrapper around libpq `PGconn` and `PGresult` for connecting to Postgre
   - Returns: `PGconn*` or `NULL`.
 
 - `PGresult *db_exec_params(Db *db, const char *sql, int n_params, const char *const *param_values, RepoError *err);`
-  - Purpose: Execute a parametrized SQL statement with text parameters.
-  - Params: `db` – connection; `sql` – SQL text with `$1..$n`; `n_params` – number of parameters; `param_values` – array of `const char*` values; `err` – optional error output.
+  - Purpose: Execute a parametrized SQL statement with text parameters (`$1..$n`).
+  - Params: `db` – connection; `sql` – SQL text; `n_params` – parameter count; `param_values` – array of C strings; `err` – optional error output.
+  - Behaviour: Uses `PQexecParams`; on non-`PGRES_TUPLES_OK` / non-`PGRES_COMMAND_OK` status writes error into `err`.
   - Returns: non-`NULL` `PGresult*` on success (caller must `PQclear`), `NULL` on error.
 
 ---
 
-## Module: repo_error.h / repo_error.c
+## Module: `repo_error.h` / `repo_error.c`
 
 Repository-layer error type mirroring Rust `RepoError` with DB, not-found, and domain variants.
 
 ### Types
+
 - `typedef enum { REPO_ERROR_NONE, REPO_ERROR_DB, REPO_ERROR_NOT_FOUND, REPO_ERROR_DOMAIN } RepoErrorCode;`
 - `typedef struct { RepoErrorCode code; char message[REPO_ERROR_MESSAGE_MAX]; } RepoError;`
 
 ### Functions
+
 - `RepoError repo_error_ok(void);`
   - Purpose: Construct a `RepoError` representing success.
-  - Params: none.
   - Returns: `RepoError` with `code = REPO_ERROR_NONE`.
 
 - `RepoError repo_error_db(const char *msg);`
@@ -55,8 +64,8 @@ Repository-layer error type mirroring Rust `RepoError` with DB, not-found, and d
 
 - `RepoError repo_error_not_found(const char *entity);`
   - Purpose: Represent a missing row for a given entity type.
-  - Params: `entity` – static entity name (e.g. "user").
-  - Returns: `RepoError` with `code = REPO_ERROR_NOT_FOUND`.
+  - Params: `entity` – static entity name (e.g. `"user"`).
+  - Returns: `RepoError` with `code = REPO_ERROR_NOT_FOUND` and formatted message.
 
 - `RepoError repo_error_from_domain(const DomainError *domain);`
   - Purpose: Convert a `DomainError` into a `RepoError`.
@@ -70,11 +79,12 @@ Repository-layer error type mirroring Rust `RepoError` with DB, not-found, and d
 
 ---
 
-## Module: util_str.h / util_str.c
+## Module: `util_str.h` / `util_str.c`
 
 Small helpers for string → integer conversions used by repositories.
 
 ### Functions
+
 - `bool util_str_to_i64(const char *s, int64_t *out);`
   - Purpose: Parse a decimal string into signed 64-bit integer.
   - Params: `s` – zero-terminated string; `out` – receives parsed value.
@@ -82,14 +92,16 @@ Small helpers for string → integer conversions used by repositories.
 
 ---
 
-## Module: account_repo.h / account_repo.c
+## Module: `account_repo.h` / `account_repo.c`
 
-Repository for `accounts` table. Maps rows to domain `Account*` and exposes CRUD and existence checks.
+Repository for the `accounts` table. Maps rows to domain `Account*` and exposes CRUD and existence checks.
 
 ### Types
+
 - `typedef struct AccountRepo AccountRepo;` – opaque repository bound to a `Db` connection.
 
 ### Functions
+
 - `AccountRepo *account_repo_new(Db *db);`
   - Purpose: Create a repository bound to an existing `Db` (non-owning).
   - Params: `db` – initialized database handle.
@@ -97,180 +109,136 @@ Repository for `accounts` table. Maps rows to domain `Account*` and exposes CRUD
 
 - `void account_repo_free(AccountRepo *repo);`
   - Purpose: Free repository instance (does not close `Db`).
-  - Params: `repo` – repository pointer.
-  - Returns: nothing.
 
 - `bool account_repo_get_by_id(AccountRepo *repo, AccountId id, Account **out, RepoError *err);`
   - Purpose: Load a single account by primary key.
-  - Params: `repo` – repository; `id` – account id; `out` – receives `Account*` (must `account_free`); `err` – error output.
+  - Params: `repo` – repository; `id` – account id; `out` – receives `Account*` (caller must `account_free`); `err` – error output.
+  - Behaviour: `SELECT id, user_id, account_type, currency, balance_cents, iban FROM accounts WHERE id = $1`.
   - Returns: `true` on success, `false` on DB error or not-found.
 
 - `bool account_repo_get_by_iban(AccountRepo *repo, const char *iban_str, Account **out, RepoError *err);`
   - Purpose: Load account by unique IBAN.
-  - Params: `repo` – repository; `iban_str` – plain IBAN string; `out` – receives `Account*`; `err` – error.
-  - Returns: `true` on success, `false` otherwise.
+  - Behaviour: `SELECT … WHERE iban = $1`.
 
 - `bool account_repo_list_for_user(AccountRepo *repo, UserId user_id, Account ***out_accounts, size_t *out_count, RepoError *err);`
-  - Purpose: List all accounts belonging to a user.
-  - Params: `repo` – repository; `user_id` – owner; `out_accounts` – receives array of `Account*`; `out_count` – array length; `err` – error.
-  - Returns: `true` on success, `false` otherwise.
+  - Purpose: List all accounts belonging to a user, ordered by id.
+  - Params: `out_accounts` – heap array of `Account*`; `out_count` – length.
+  - Behaviour: Caller must free each account and the array pointer.
 
 - `bool account_repo_insert(AccountRepo *repo, const Account *account, AccountId *out_id, RepoError *err);`
   - Purpose: Insert a new account without id and return generated id.
-  - Params: `repo` – repository; `account` – domain object; `out_id` – receives `AccountId`; `err` – error.
-  - Returns: `true` on success, `false` on DB or domain error.
+  - Params: `account` – domain object without id set.
+  - Behaviour: `INSERT … RETURNING id`.
+  - Returns: `false` on domain validation failure or DB error (including unique violations).
 
 - `bool account_repo_update(AccountRepo *repo, const Account *account, RepoError *err);`
-  - Purpose: Update an existing account (must have id).
-  - Params: `repo` – repository; `account` – domain object; `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
+  - Purpose: Update an existing account including `balance_cents`.
+  - Params: `account` – must carry valid id.
+  - Behaviour: `UPDATE accounts SET … WHERE id = $n`; not-found if zero rows affected.
 
 - `bool account_repo_delete(AccountRepo *repo, AccountId id, RepoError *err);`
   - Purpose: Delete account by id.
-  - Params: `repo` – repository; `id` – account id; `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
 
 - `bool account_repo_exists_by_iban(AccountRepo *repo, const char *iban_str, bool *out_exists, RepoError *err);`
   - Purpose: Check if an account with a given IBAN exists.
-  - Params: `repo` – repository; `iban_str` – IBAN; `out_exists` – receives boolean; `err` – error.
-  - Returns: `true` if query executed, `false` on DB error.
+  - Behaviour: `SELECT EXISTS (SELECT 1 FROM accounts WHERE iban = $1)`.
 
 - `bool account_repo_exists_by_account_type(AccountRepo *repo, UserId user_id, AccountType account_type, bool *out_exists, RepoError *err);`
-  - Purpose: Check if user already has an account of a given type.
-  - Params: `repo` – repository; `user_id` – owner; `account_type` – enum; `out_exists` – boolean out; `err` – error.
-  - Returns: `true` if query executed, `false` on DB error.
+  - Purpose: Check if user already has **any** account of the given type (regardless of currency).
+  - Behaviour: `SELECT EXISTS (SELECT 1 FROM accounts WHERE account_type = $1 AND user_id = $2)`.
 
 ---
 
-## Module: user_repo.h / user_repo.c
+## Module: `user_repo.h` / `user_repo.c`
 
-Repository for `users` table. Handles lookups by id, email, tag and full insert/update/delete for domain `User*`.
+Repository for the `users` table. Handles lookups by id, email, tag and full insert/update/delete for domain `User*`.
 
 ### Types
-- `typedef struct UserRepo UserRepo;` – repository bound to a `Db`.
+
+- `typedef struct UserRepo UserRepo;`
 
 ### Functions
-- `UserRepo *user_repo_new(Db *db);`
-  - Purpose: Create a user repository sharing the given `Db`.
-  - Params: `db` – database handle.
-  - Returns: `UserRepo*` or `NULL`.
 
-- `void user_repo_free(UserRepo *repo);`
-  - Purpose: Free repository structure.
-  - Params: `repo` – repository pointer.
-  - Returns: nothing.
+- `UserRepo *user_repo_new(Db *db);` / `void user_repo_free(UserRepo *repo);`
 
 - `bool user_repo_get_by_id(UserRepo *repo, UserId id, User **out, RepoError *err);`
-  - Purpose: Load user by primary key.
-  - Params: `repo` – repository; `id` – user id; `out` – receives `User*` (must `user_free`); `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
+  - Behaviour: `SELECT id, tag, email, first_name, last_name, phone, birth_date, password_hash FROM users WHERE id = $1`.
 
 - `bool user_repo_get_by_email(UserRepo *repo, const char *email_str, User **out, RepoError *err);`
-  - Purpose: Load user by unique email.
-  - Params: `repo` – repository; `email_str` – email; `out` – receives `User*`; `err` – error.
-  - Returns: `true` on success, `false` otherwise.
+  - Behaviour: Same projection with `WHERE email = $1`.
 
 - `bool user_repo_get_by_tag(UserRepo *repo, const char *tag, User **out, RepoError *err);`
-  - Purpose: Load user by public "tag" (username-like).
-  - Params: `repo` – repository; `tag` – tag string; `out` – receives `User*`; `err` – error.
-  - Returns: `true` on success, `false` otherwise.
+  - Behaviour: Same projection with `WHERE tag = $1`.
 
 - `bool user_repo_insert(UserRepo *repo, const User *user, UserId *out_id, RepoError *err);`
-  - Purpose: Insert new user without id and return generated id.
-  - Params: `repo` – repository; `user` – domain object; `out_id` – receives `UserId`; `err` – error.
-  - Returns: `true` on success, `false` on DB or domain error.
+  - Purpose: Insert new user; rejects if id already set on domain object.
 
 - `bool user_repo_update(UserRepo *repo, const User *user, RepoError *err);`
-  - Purpose: Update existing user, including nullable phone and birth_date.
-  - Params: `repo` – repository; `user` – domain object (must have id); `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
+  - Purpose: Update user including nullable `phone` and `birth_date`.
 
 - `bool user_repo_delete(UserRepo *repo, UserId id, RepoError *err);`
   - Purpose: Delete user by id.
-  - Params: `repo` – repository; `id` – user id; `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
 
 ---
 
-## Module: transaction_repo.h / transaction_repo.c
+## Module: `transaction_repo.h` / `transaction_repo.c`
 
-Repository for `transactions` table. Uses epoch seconds in C for `recorded_on`, mirroring Rust `DateTime<Utc>`.
+Repository for the `transactions` table. Uses epoch seconds (`time_t`) for `recorded_on`, mirroring Rust `DateTime<Utc>`.
 
 ### Types
-- `typedef struct TransactionRepo TransactionRepo;` – repository using a `Db`.
+
+- `typedef struct TransactionRepo TransactionRepo;`
 
 ### Functions
-- `TransactionRepo *transaction_repo_new(Db *db);`
-  - Purpose: Create transaction repository bound to `Db`.
-  - Params: `db` – database handle.
-  - Returns: `TransactionRepo*` or `NULL`.
 
-- `void transaction_repo_free(TransactionRepo *repo);`
-  - Purpose: Free repository structure.
-  - Params: `repo` – repository pointer.
-  - Returns: nothing.
+- `TransactionRepo *transaction_repo_new(Db *db);` / `void transaction_repo_free(TransactionRepo *repo);`
 
 - `bool transaction_repo_get_by_id(TransactionRepo *repo, TransactionId id, Transaction **out, RepoError *err);`
-  - Purpose: Load a single transaction by id.
-  - Params: `repo` – repository; `id` – transaction id; `out` – receives `Transaction*` (must `transaction_free`); `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
+  - Behaviour: Full transaction projection by primary key.
 
 - `bool transaction_repo_insert(TransactionRepo *repo, const Transaction *tx, TransactionId *out_id, RepoError *err);`
-  - Purpose: Insert new transaction without id and return generated id.
-  - Params: `repo` – repository; `tx` – domain object; `out_id` – receives `TransactionId`; `err` – error.
-  - Returns: `true` on success, `false` on DB or domain error.
+  - Purpose: Insert ledger row (balance updates happen in service layer before this call).
 
 - `bool transaction_repo_list_for_account(TransactionRepo *repo, AccountId account_id, int64_t limit, int64_t offset, Transaction ***out_txs, size_t *out_count, RepoError *err);`
-  - Purpose: List paginated transactions where the account participates as sender or receiver.
-  - Params: `repo` – repository; `account_id` – account; `limit` – max rows; `offset` – starting offset; `out_txs` – receives array of `Transaction*`; `out_count` – length; `err` – error.
-  - Returns: `true` on success, `false` otherwise.
+  - Purpose: Paginated list where account is sender or receiver.
+  - Behaviour: `WHERE from_account_id = $1 OR to_account_id = $1 ORDER BY recorded_on DESC, id DESC LIMIT $2 OFFSET $3`.
+  - Params: Caller frees each `Transaction*` and the array.
 
 ---
 
-## Module: affiliate_repo.h / affiliate_repo.c
+## Module: `affiliate_repo.h` / `affiliate_repo.c`
 
-Repository for `affiliates` table with composite key `(owner_user_id, recipient_sub_account_id)` and domain `Affiliate*`.
+Repository for the `affiliates` table with composite key `(owner_user_id, recipient_sub_account_id)`.
 
 ### Types
-- `typedef struct AffiliateRepo AffiliateRepo;` – repository bound to `Db`.
+
+- `typedef struct AffiliateRepo AffiliateRepo;`
 
 ### Functions
-- `AffiliateRepo *affiliate_repo_new(Db *db);`
-  - Purpose: Create affiliate repository using an existing `Db`.
-  - Params: `db` – database handle.
-  - Returns: `AffiliateRepo*` or `NULL`.
 
-- `void affiliate_repo_free(AffiliateRepo *repo);`
-  - Purpose: Free repository structure.
-  - Params: `repo` – repository pointer.
-  - Returns: nothing.
+- `AffiliateRepo *affiliate_repo_new(Db *db);` / `void affiliate_repo_free(AffiliateRepo *repo);`
 
 - `bool affiliate_repo_get(AffiliateRepo *repo, UserId owner_user_id, AccountId recipient_sub_account_id, Affiliate **out, RepoError *err);`
-  - Purpose: Load single affiliate by composite key.
-  - Params: `repo` – repository; `owner_user_id` – owner; `recipient_sub_account_id` – sub-account; `out` – receives `Affiliate*` (must `affiliate_free`); `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
+  - Purpose: Load by composite key.
 
 - `bool affiliate_repo_list_for_owner(AffiliateRepo *repo, UserId owner_user_id, Affiliate ***out_affiliates, size_t *out_count, RepoError *err);`
-  - Purpose: List all affiliates owned by a user.
-  - Params: `repo` – repository; `owner_user_id` – owner; `out_affiliates` – array of `Affiliate*`; `out_count` – length; `err` – error.
-  - Returns: `true` on success, `false` otherwise.
+  - Behaviour: Ordered by `recipient_sub_account_id`.
 
 - `bool affiliate_repo_insert(AffiliateRepo *repo, const Affiliate *affiliate, RepoError *err);`
-  - Purpose: Insert a new affiliate row.
-  - Params: `repo` – repository; `affiliate` – domain object; `err` – error.
-  - Returns: `true` on success, `false` on DB or domain error.
 
 - `bool affiliate_repo_update_nickname(AffiliateRepo *repo, UserId owner_user_id, AccountId recipient_sub_account_id, const char *nickname, RepoError *err);`
-  - Purpose: Update nickname for an existing affiliate after domain validation.
-  - Params: `repo` – repository; `owner_user_id` – owner; `recipient_sub_account_id` – sub-account; `nickname` – new nickname; `err` – error.
-  - Returns: `true` on success, `false` on DB error, domain error, or not-found.
+  - Behaviour: Validates nickname via domain before `UPDATE`.
 
 - `bool affiliate_repo_delete(AffiliateRepo *repo, UserId owner_user_id, AccountId recipient_sub_account_id, RepoError *err);`
-  - Purpose: Delete affiliate by composite key.
-  - Params: `repo` – repository; `owner_user_id` – owner; `recipient_sub_account_id` – sub-account; `err` – error.
-  - Returns: `true` on success, `false` on DB error or not-found.
 
 - `bool affiliate_repo_exists(AffiliateRepo *repo, UserId owner_user_id, AccountId recipient_sub_account_id, bool *out_exists, RepoError *err);`
-  - Purpose: Check if a link already exists between owner and sub-account.
-  - Params: `repo` – repository; `owner_user_id` – owner; `recipient_sub_account_id` – sub-account; `out_exists` – boolean out; `err` – error.
-  - Returns: `true` if query executed, `false` on DB error.
+
+---
+
+## Usage and extension notes
+
+- All repositories follow the same pattern as the Rust backend: SQL in the repo, invariants in the domain.
+- Return `REPO_ERROR_NOT_FOUND` when a lookup finds no row; propagate DB errors as `REPO_ERROR_DB`.
+- Caller owns heap-allocated domain objects returned by `get_*` and `list_*` functions — free with the matching `*_free()` helper.
+- The service layer never calls libpq directly — only repository functions and `RepoError`.
+- To add a new repo method, mirror the Rust equivalent: same SQL shape, same error semantics, map rows through domain constructors/`rehydrate`.

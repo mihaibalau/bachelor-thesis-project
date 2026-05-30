@@ -44,3 +44,13 @@ bool currency_from_str(const char *s, Currency *out, DomainError *err) {
     if (err) *err = domain_error_validation("Invalid currency type");
     return false;
 }
+
+const Currency *currency_all(size_t *out_count) {
+    static const Currency ALL[CURRENCY_COUNT] = {
+        CURRENCY_RON,
+        CURRENCY_EUR,
+        CURRENCY_USD
+    };
+    if (out_count) *out_count = CURRENCY_COUNT;
+    return ALL;
+}

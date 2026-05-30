@@ -95,6 +95,19 @@ typedef struct TxAccountRepositoryVTable {
         size_t *out_count,
         RepoError *err);
 
+    /* Needed for ownership checks and same-currency rules on send/transfer. */
+    bool (*get_by_id)(
+        void *ctx,
+        AccountId account_id,
+        Account **out,
+        RepoError *err);
+
+    /* Needed to persist balance changes when recording a transaction. */
+    bool (*update)(
+        void *ctx,
+        const Account *account,
+        RepoError *err);
+
 } TxAccountRepositoryVTable;
 
 typedef struct TxAccountRepository {
@@ -279,11 +292,113 @@ bool transaction_service_compute_user_statistics(
     TransactionService *svc,
     UserId user_id,
     int64_t per_account_limit,
+    bool has_from,                  /* restrict to recorded_on >= from */
+    time_t from,
+    bool has_to,                    /* restrict to recorded_on <= to   */
+    time_t to,
     UserTransactionStatistics *out,
     ServiceError *err
 );
 
 /* Free heap memory inside a UserTransactionStatistics (per_day array). */
 void user_transaction_statistics_free(UserTransactionStatistics *stats);
+
+/* ── User-facing use-cases (thin wrappers used by the HTTP layer) ─────────── */
+/*
+ * Each of these mirrors the matching Rust `*_for_user` method: it first
+ * verifies the relevant account(s) belong to `user_id`, then applies the
+ * deposit/withdrawal/send/transfer/payment business rules (amount sign, unit
+ * → cents conversion, same-currency checks, description formatting) before
+ * recording the transaction. All of this is business logic and lives here,
+ * never in the server layer.
+ *
+ * `amount` parameters named *_units are whole currency units (no cents) and
+ * are multiplied by 100, exactly like the Rust DepositRequest/PaymentRequest.
+ */
+
+bool transaction_service_record_deposit_for_user(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId account_id,
+    int64_t amount_units,
+    TransactionId *out_id,
+    ServiceError *err
+);
+
+bool transaction_service_record_withdrawal_for_user(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId account_id,
+    int64_t amount_units,
+    TransactionId *out_id,
+    ServiceError *err
+);
+
+bool transaction_service_record_send_for_user(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId from_account_id,
+    AccountId recipient_account_id,
+    int64_t value_cents,
+    const char *message,
+    TransactionId *out_id,
+    ServiceError *err
+);
+
+bool transaction_service_record_transfer_for_user(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId from_account_id,
+    AccountId to_account_id,
+    int64_t value_cents,
+    TransactionId *out_id,
+    ServiceError *err
+);
+
+bool transaction_service_record_payment_for_user(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId from_account_id,
+    int64_t amount_units,
+    const char *category,
+    const char *merchant_name,
+    const char *note_opt,           /* NULL if absent */
+    TransactionId *out_id,
+    ServiceError *err
+);
+
+/*
+ * list_recent_for_user: ownership-checked recent listing.
+ * `limit` defaults to 10 (when <= 0) and is floored at 1, mirroring Rust.
+ * Caller owns *out_txs (free each Transaction* then the array).
+ */
+bool transaction_service_list_recent_for_user(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId account_id,
+    int64_t limit,                  /* <= 0 means "unset" → default 10 */
+    Transaction ***out_txs,
+    size_t *out_count,
+    ServiceError *err
+);
+
+/*
+ * compute_account_statement_for_user_from_strings: ownership-checked statement
+ * with optional "YYYY-MM-DD" date bounds parsed here in the service.
+ * `from`/`to` may be NULL. `limit`/`offset` <= 0 fall back to 100 / 0.
+ * Caller owns *out_entries (free()).
+ */
+bool transaction_service_compute_account_statement_for_user_from_strings(
+    TransactionService *svc,
+    UserId user_id,
+    AccountId account_id,
+    const char *from_opt,           /* NULL or "YYYY-MM-DD" */
+    const char *to_opt,             /* NULL or "YYYY-MM-DD" */
+    int64_t limit,                  /* <= 0 → 100 */
+    int64_t offset,                 /* <  0 → 0   */
+    AccountStatementEntry **out_entries,
+    size_t *out_count,
+    ServiceError *err
+);
 
 #endif //C_TRANSACTION_SERVICE_H

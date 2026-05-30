@@ -12,7 +12,10 @@ typedef enum {
     SERVICE_ERROR_CONFLICT,
     SERVICE_ERROR_VALIDATION,
     SERVICE_ERROR_DOMAIN,
-    SERVICE_ERROR_REPO
+    SERVICE_ERROR_REPO,
+    SERVICE_ERROR_CONCURRENCY,
+    SERVICE_ERROR_FORBIDDEN,
+    SERVICE_ERROR_UNEXPECTED
 } ServiceErrorCode;
 
 typedef struct ServiceError {
@@ -33,6 +36,15 @@ ServiceError service_error_validation(const char *msg);
 ServiceError service_error_from_domain(const DomainError *derr);
 
 ServiceError service_error_from_repo(const RepoError *rerr);
+
+/* Concurrency / coordination errors at the service layer (Rust: Concurrency). */
+ServiceError service_error_concurrency(const char *msg);
+
+/* Access denied (Rust: ServiceError::Forbidden). */
+ServiceError service_error_forbidden(void);
+
+/* Catch-all for unexpected internal failures (Rust: ServiceError::Unexpected). */
+ServiceError service_error_internal(const char *msg);
 
 /* Helpers */
 

@@ -8,7 +8,8 @@ typedef enum {
     TRANSACTION_TYPE_DEPOSIT,
     TRANSACTION_TYPE_WITHDRAWAL,
     TRANSACTION_TYPE_SEND,
-    TRANSACTION_TYPE_TRANSFER
+    TRANSACTION_TYPE_TRANSFER,
+    TRANSACTION_TYPE_PAYMENT
 } TransactionType;
 
 const char *transaction_type_as_str(TransactionType t);

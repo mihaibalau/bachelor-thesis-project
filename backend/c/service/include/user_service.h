@@ -116,7 +116,7 @@ typedef struct RegisterUserCommand {
     const char   *last_name;
     const char   *phone_opt;          /* NULL or string */
     const struct tm *birth_date_opt;  /* NULL or pointer */
-    const char   *password_hash;      /* already hashed */
+    const char   *password;           /* raw password; hashed inside the service */
 } RegisterUserCommand;
 
 typedef struct {

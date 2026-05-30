@@ -42,7 +42,8 @@ ServiceError service_error_conflict(const char *entity, const char *reason) {
 
     char buf[SERVICE_ERROR_MESSAGE_MAX];
     if (reason) {
-        snprintf(buf, sizeof buf, "%s: %s", entity ? entity : "conflict", reason);
+        /* Mirrors Rust ApiError formatting: "{entity} conflict: {message}". */
+        snprintf(buf, sizeof buf, "%s conflict: %s", entity ? entity : "conflict", reason);
     } else {
         snprintf(buf, sizeof buf, "%s conflict", entity ? entity : "conflict");
     }
@@ -92,6 +93,27 @@ ServiceError service_error_from_repo(const RepoError *rerr) {
         service_error_set_msg(&err, rerr->message);
         break;
     }
+    return err;
+}
+
+ServiceError service_error_concurrency(const char *msg) {
+    ServiceError err;
+    err.code = SERVICE_ERROR_CONCURRENCY;
+    service_error_set_msg(&err, msg);
+    return err;
+}
+
+ServiceError service_error_forbidden(void) {
+    ServiceError err;
+    err.code = SERVICE_ERROR_FORBIDDEN;
+    service_error_set_msg(&err, "access denied");
+    return err;
+}
+
+ServiceError service_error_internal(const char *msg) {
+    ServiceError err;
+    err.code = SERVICE_ERROR_UNEXPECTED;
+    service_error_set_msg(&err, msg);
     return err;
 }
 

@@ -89,6 +89,16 @@ typedef struct OpenAccountCommand {
     const char *iban_str;
 } OpenAccountCommand;
 
+/*
+ * Availability matrix mirroring Rust's AccountAvailability
+ * (HashMap<AccountType, Vec<Currency>>): available[type][currency] == true
+ * means the user does NOT yet hold an account of that (type, currency) pair
+ * and may therefore open one.
+ */
+typedef struct AccountAvailability {
+    bool available[ACCOUNT_TYPE_COUNT][CURRENCY_COUNT];
+} AccountAvailability;
+
 /* ---- AccountService "object" ---------------------------------------- */
 
 typedef struct AccountService AccountService;
@@ -117,6 +127,48 @@ bool account_service_open_account(
     AccountService *svc,
     const OpenAccountCommand *cmd,
     AccountId *out_id,
+    ServiceError *err
+);
+
+/*
+ * open_account_raw: accept raw strings from the API and perform all parsing,
+ * validation and IBAN generation here in the service (the server layer only
+ * forwards the request body).
+ *
+ * Steps (matching Rust open_account_raw + open_account exactly):
+ *   1. Parse account_type / currency from strings (validation error on fail).
+ *   2. Reject negative initial_balance_cents.
+ *   3. Enforce at-most-one account per (user, type).
+ *   4. Generate a unique IBAN, build the domain Account, and persist it
+ *      (retrying with a fresh IBAN on collision).
+ *
+ * Mirrors:
+ *   pub async fn open_account_raw(&self, user_id, account_type_str,
+ *       currency_str, initial_balance_cents) -> ServiceResult<AccountId>
+ */
+bool account_service_open_account_raw(
+    AccountService *svc,
+    UserId user_id,
+    const char *account_type_str,
+    const char *currency_str,
+    int64_t initial_balance_cents,
+    AccountId *out_id,
+    ServiceError *err
+);
+
+/*
+ * get_account_availability: for every (AccountType, Currency) pair, report
+ * whether the user may still open such an account (i.e. does not already
+ * hold one).
+ *
+ * Mirrors:
+ *   pub async fn get_account_availability(&self, user_id)
+ *       -> ServiceResult<AccountAvailability>
+ */
+bool account_service_get_account_availability(
+    AccountService *svc,
+    UserId user_id,
+    AccountAvailability *out,
     ServiceError *err
 );
 

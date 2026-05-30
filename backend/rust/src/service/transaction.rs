@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::thread;
@@ -195,14 +195,28 @@ where
     #[tracing::instrument(skip(self), fields(user_id = %user_id.0, per_account_limit))]
     pub async fn compute_user_monthly_summary_for_user(&self, user_id: UserId, per_account_limit: Option<i64>) -> ServiceResult<UserTransactionStatistics> {
         let limit = per_account_limit.unwrap_or(500).clamp(1, 1000);
-        self.compute_user_statistics(user_id, limit).await
+        // The current-month window is decided by the route handler (the agreed
+        // "shaping" exception); when called directly this computes all-time stats.
+        self.compute_user_statistics(user_id, limit, None, None).await
     }
 
     /// Record a new transaction
     ///
     /// This method:
     /// - validates using the domain `Transaction` constructor,
-    /// - stores the transaction
+    /// - applies the monetary effect to the affected account balances
+    ///   (debit source / credit destination) using the domain helpers,
+    /// - persists the updated balances,
+    /// - stores the transaction.
+    ///
+    /// The balance effect depends on the transaction type:
+    /// - `Deposit`            : credit the destination account.
+    /// - `Withdrawal`/`Payment`: debit the source account.
+    /// - `Send`/`Transfer`    : debit the source AND credit the destination.
+    ///
+    /// Any operation that would overdraw the source account is rejected with a
+    /// validation error ("insufficient funds") before the transaction row is
+    /// written, so the ledger never records money that was not actually moved.
     pub async fn record_transaction(&self, cmd: RecordTransactionCommand)
         -> ServiceResult<TransactionId> {
 
@@ -219,6 +233,34 @@ where
             cmd.value_cents,
             cmd.description,
         )?;
+
+        // Apply the monetary effect to the affected accounts and persist it.
+        match cmd.transaction_type {
+            TransactionType::Deposit => {
+                let mut to_acc = self.account_repo.get_by_id(cmd.to_account_id).await?;
+                to_acc.credit(cmd.value_cents)?;
+                self.account_repo.update(&to_acc).await?;
+            }
+            TransactionType::Withdrawal | TransactionType::Payment => {
+                let mut from_acc = self.account_repo.get_by_id(cmd.from_account_id).await?;
+                if from_acc.balance_cents() < cmd.value_cents {
+                    return Err(ServiceError::Validation("insufficient funds".into()));
+                }
+                from_acc.debit(cmd.value_cents)?;
+                self.account_repo.update(&from_acc).await?;
+            }
+            TransactionType::Send | TransactionType::Transfer => {
+                let mut from_acc = self.account_repo.get_by_id(cmd.from_account_id).await?;
+                let mut to_acc = self.account_repo.get_by_id(cmd.to_account_id).await?;
+                if from_acc.balance_cents() < cmd.value_cents {
+                    return Err(ServiceError::Validation("insufficient funds".into()));
+                }
+                from_acc.debit(cmd.value_cents)?;
+                to_acc.credit(cmd.value_cents)?;
+                self.account_repo.update(&from_acc).await?;
+                self.account_repo.update(&to_acc).await?;
+            }
+        }
 
         let id = self.tx_repo.insert(&tx).await?;
         Ok(id)
@@ -244,66 +286,133 @@ where
     pub async fn compute_account_statement(&self, query: AccountStatementQuery)
         -> ServiceResult<Vec<AccountStatementEntry>> {
 
-        let mut txs = self.tx_repo.list_for_account(query.account_id, query.limit, query.offset).await?;
+        let account_id = query.account_id;
 
-        // Filter by date range
-        if let Some(from) = query.from {
-            txs.retain(|t| t.recorded_on() >= from);
-        }
-        if let Some(to) = query.to {
-            txs.retain(|t| t.recorded_on() <= to);
-        }
+        // The account's *current* balance reflects every transaction ever applied
+        // to it. We use it to anchor the running balance: the opening balance is
+        // reconstructed as `current - sum(all signed deltas)`, after which we can
+        // replay forward to obtain a correct `balance_after` for each transaction.
+        let account = self.account_repo.get_by_id(account_id).await?;
+        let current_balance = account.balance_cents();
 
-        // Sort oldest -> newest
-        txs.sort_by_key(|t| t.recorded_on().clone());
+        // Load the FULL history for the account (date filtering + pagination are
+        // applied *after* the running-balance computation, so a date-range query
+        // is never truncated by an early LIMIT and pagination slices the correct,
+        // already-filtered set).
+        let all = self.tx_repo.list_for_account(account_id, i64::MAX, 0).await?;
 
-        // Offload running-balance computation to a blocking thread.
+        let from = query.from;
+        let to = query.to;
+        let offset = query.offset.max(0);
+        let limit = query.limit;
+
+        // Offload the CPU-heavy sort + accumulation to a blocking thread.
         let handle = task::spawn_blocking(move || {
-            let mut balance: i64 = 0;
-            let mut entries = Vec::with_capacity(txs.len());
+            let mut all = all;
 
-            for tx in txs {
-                // Simple model: outgoing reduces balance, incoming increases
-                let delta = match tx.transaction_type() {
-                    TransactionType::Transfer
-                    | TransactionType::Withdrawal
-                    | TransactionType::Send
-                    | TransactionType::Payment => -tx.value_cents(), // NEW
-                    TransactionType::Deposit => tx.value_cents(),
-                };
+            // Signed delta relative to *this* account: a transaction credits the
+            // account when it is the destination (`to`) and debits it when it is
+            // the source (`from`). `list_for_account` only returns transactions
+            // touching the account, so exactly one side matches.
+            let delta = |tx: &Transaction| -> i64 {
+                if tx.to_account_id() == account_id {
+                    tx.value_cents()
+                } else {
+                    -tx.value_cents()
+                }
+            };
 
-                balance += delta;
+            // Chronological order (oldest -> newest), ties broken by id.
+            all.sort_by(|a, b| {
+                a.recorded_on()
+                    .cmp(&b.recorded_on())
+                    .then_with(|| a.id().map(|i| i.0).cmp(&b.id().map(|i| i.0)))
+            });
 
-                entries.push(AccountStatementEntry {
+            let total: i64 = all.iter().map(|t| delta(t)).sum();
+            let mut running = current_balance - total;
+
+            // Forward pass: tag every transaction with its balance-after.
+            let mut rows: Vec<AccountStatementEntry> = Vec::with_capacity(all.len());
+            for tx in &all {
+                running += delta(tx);
+                rows.push(AccountStatementEntry {
                     transaction_id: tx.id().expect("rehydrated transaction must have id"),
-                    recorded_on: tx.recorded_on().clone(),
+                    recorded_on: tx.recorded_on(),
                     description: tx.description().to_string(),
-                    transaction_type: tx.transaction_type().clone(),
+                    transaction_type: *tx.transaction_type(),
                     value_cents: tx.value_cents(),
-                    balance_after_cents: balance,
+                    balance_after_cents: running,
                 });
             }
 
-            entries
+            // Date-range filter (applied before pagination).
+            let mut filtered: Vec<AccountStatementEntry> = rows
+                .into_iter()
+                .filter(|e| {
+                    from.map_or(true, |f| e.recorded_on >= f)
+                        && to.map_or(true, |t| e.recorded_on <= t)
+                })
+                .collect();
+
+            // Pagination mirrors the original "most recent first" semantics:
+            // order newest -> oldest, take the requested slice, then present the
+            // slice oldest -> newest (each entry keeps its absolute balance-after).
+            filtered.sort_by(|a, b| {
+                b.recorded_on
+                    .cmp(&a.recorded_on)
+                    .then_with(|| b.transaction_id.0.cmp(&a.transaction_id.0))
+            });
+
+            let off = offset as usize;
+            let lim = if limit < 0 { 0usize } else { limit as usize };
+
+            let mut page: Vec<AccountStatementEntry> =
+                filtered.into_iter().skip(off).take(lim).collect();
+
+            page.sort_by(|a, b| {
+                a.recorded_on
+                    .cmp(&b.recorded_on)
+                    .then_with(|| a.transaction_id.0.cmp(&b.transaction_id.0))
+            });
+
+            page
         });
 
         let entries = handle.await.map_err(|e| ServiceError::Concurrency(format!("join error: {e}")))?;
         Ok(entries)
     }
 
-    pub async fn compute_user_statistics(&self, user_id: UserId, per_account_limit: i64, )
-        -> ServiceResult<UserTransactionStatistics> {
+    pub async fn compute_user_statistics(
+        &self,
+        user_id: UserId,
+        per_account_limit: i64,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    ) -> ServiceResult<UserTransactionStatistics> {
         let accounts = self.account_repo.list_for_user(user_id).await?;
 
-        // Load transactions for each account
-        let mut all_transactions = Vec::new();
+        // The set of accounts owned by this user. Direction (incoming vs
+        // outgoing) is decided relative to this set, not by transaction type.
+        let user_account_ids: HashSet<AccountId> =
+            accounts.iter().filter_map(|a| a.id()).collect();
+
+        // Load transactions for each account and DEDUPLICATE by id. An internal
+        // Transfer/Send between two of the user's own accounts is returned once
+        // per side; keeping it once prevents double counting.
+        let mut unique: HashMap<TransactionId, Transaction> = HashMap::new();
         for account in &accounts {
             let txs = self
                 .tx_repo
                 .list_for_account(account.id().unwrap(), per_account_limit, 0)
                 .await?;
-            all_transactions.extend(txs);
+            for tx in txs {
+                if let Some(id) = tx.id() {
+                    unique.entry(id).or_insert(tx);
+                }
+            }
         }
+        let all_transactions: Vec<Transaction> = unique.into_values().collect();
 
         let stats_handle = task::spawn_blocking(move || {
             let total_incoming = AtomicI64::new(0);
@@ -327,36 +436,48 @@ where
                     let total_incoming = &total_incoming;
                     let total_outgoing = &total_outgoing;
                     let total_volume = &total_volume;
+                    let user_account_ids = &user_account_ids;
 
                     scope.spawn(move || {
                         for tx in chunk {
+                            // Restrict to the requested [from, to] window.
+                            let recorded = tx.recorded_on();
+                            if let Some(f) = from { if recorded < f { continue; } }
+                            if let Some(t) = to { if recorded > t { continue; } }
+
                             let value = tx.value_cents();
 
-                            match tx.transaction_type() {
-                                TransactionType::Transfer
-                                | TransactionType::Send
-                                | TransactionType::Withdrawal
-                                | TransactionType::Payment => {
-                                    total_outgoing.fetch_add(value, Ordering::Relaxed);
-                                }
-                                TransactionType::Deposit => {
-                                    total_incoming.fetch_add(value, Ordering::Relaxed);
-                                }
+                            // Signed effect on the user: credited when one of the
+                            // user's accounts is the destination, debited when one
+                            // is the source. An internal transfer between two owned
+                            // accounts nets to zero (so it is neither income nor
+                            // spending), but still appears in per-type totals.
+                            let to_owned = user_account_ids.contains(&tx.to_account_id());
+                            let from_owned = user_account_ids.contains(&tx.from_account_id());
+                            let net = (if to_owned { value } else { 0 })
+                                - (if from_owned { value } else { 0 });
+
+                            if net > 0 {
+                                total_incoming.fetch_add(net, Ordering::Relaxed);
+                            } else if net < 0 {
+                                total_outgoing.fetch_add(-net, Ordering::Relaxed);
                             }
 
-                            total_volume.fetch_add(value.abs(), Ordering::Relaxed);
+                            total_volume.fetch_add(net.abs(), Ordering::Relaxed);
 
-                            // Per-type totals under a mutex
+                            // Per-type totals under a mutex (gross value per type).
                             {
                                 let mut map = per_type.lock().expect("poisoned mutex");
                                 *map.entry(*tx.transaction_type()).or_insert(0) += value;
                             }
 
-                            // Per-day totals under a mutex
+                            // Per-day totals under a mutex: SIGNED net so that
+                            // outgoing reduces the day's total (the route derives
+                            // daily spending from the negative part).
                             {
-                                let date = tx.recorded_on().date_naive();
+                                let date = recorded.date_naive();
                                 let mut map = per_day.lock().expect("poisoned mutex");
-                                *map.entry(date).or_insert(0) += value;
+                                *map.entry(date).or_insert(0) += net;
                             }
                         }
                     });
@@ -535,7 +656,9 @@ where
             ));
         }
 
-        let value_cents = amount_units * 100;
+        let value_cents = amount_units
+            .checked_mul(100)
+            .ok_or_else(|| ServiceError::Validation("amount too large".into()))?;
 
         let description = format!(
             "Payment | category: {} | merchant: {}{}",

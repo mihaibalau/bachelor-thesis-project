@@ -25,6 +25,7 @@ pub trait AccountRepository: Send + Sync {
     async fn exists_by_iban(&self, iban: &str) -> Result<bool, RepoError>;
     async fn get_by_id(&self, account_id: AccountId) -> Result<Account, RepoError>;
     async fn insert(&self, account: &Account) -> Result<AccountId, RepoError>;
+    async fn update(&self, account: &Account) -> Result<(), RepoError>;
     async fn list_type_currency_pairs(&self, user_id: UserId) -> Result<Vec<(AccountType, Currency)>, RepoError>;
 }
 
@@ -56,6 +57,10 @@ impl AccountRepository for AccountRepo {
 
     async fn insert(&self, account: &Account) -> Result<AccountId, RepoError> {
         self.insert(account).await
+    }
+
+    async fn update(&self, account: &Account) -> Result<(), RepoError> {
+        self.update(account).await
     }
 
     async fn list_type_currency_pairs(&self, user_id: UserId) -> Result<Vec<(AccountType, Currency)>, RepoError> {
@@ -186,20 +191,25 @@ where
         let all_types = AccountType::all();
         let all_currencies = Currency::all();
 
-        let existing: HashSet<(AccountType, Currency)> = self
+        // `open_account` enforces at-most-one account *per account type* (see
+        // `exists_by_account_type`), regardless of currency. Availability must
+        // mirror that rule: once the user owns ANY account of a given type, every
+        // currency for that type becomes unavailable.
+        let owned_types: HashSet<AccountType> = self
             .repo
             .list_type_currency_pairs(user_id)
             .await?
             .into_iter()
+            .map(|(account_type, _currency)| account_type)
             .collect();
 
         let mut available = HashMap::new();
         for &account_type in all_types {
-            let free_currencies: Vec<Currency> = all_currencies
-                .iter()
-                .filter(|&&c| !existing.contains(&(account_type, c)))
-                .copied()
-                .collect();
+            let free_currencies: Vec<Currency> = if owned_types.contains(&account_type) {
+                Vec::new()
+            } else {
+                all_currencies.to_vec()
+            };
             available.insert(account_type, free_currencies);
         }
 

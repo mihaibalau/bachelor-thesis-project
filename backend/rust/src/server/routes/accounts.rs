@@ -70,8 +70,10 @@ pub struct AccountAvailabilityResponse {
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let private = Router::new()
         .route("/", post(open_account))
-        .route("/{id}", get(get_account))
+        // Register the static `/availability` path BEFORE the parameterized
+        // `/{id}` route so it is never captured (and fail-to-parse) by `{id}`.
         .route("/availability", get(get_availability))
+        .route("/{id}", get(get_account))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_auth,
