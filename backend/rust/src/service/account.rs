@@ -10,10 +10,7 @@ use crate::domain::value::currency::Currency;
 use crate::domain::value::iban::IBAN;
 use crate::service::errors::{ServiceError, ServiceResult};
 
-/// Repository abstraction for accounts
-///
-/// Defining this as a trait lets you unit-test `AccountService` with
-/// in-memory fakes instead of hitting Postgres
+// Repository port for accounts
 #[async_trait]
 pub trait AccountRepository: Send + Sync {
     async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Account>, RepoError>;
@@ -22,6 +19,12 @@ pub trait AccountRepository: Send + Sync {
         user_id: UserId,
         account_type: AccountType,
     ) -> Result<bool, RepoError>;
+    async fn exists_by_type_and_currency(
+        &self,
+        user_id: UserId,
+        account_type: AccountType,
+        currency: Currency,
+    ) -> Result<bool, RepoError>;
     async fn exists_by_iban(&self, iban: &str) -> Result<bool, RepoError>;
     async fn get_by_id(&self, account_id: AccountId) -> Result<Account, RepoError>;
     async fn insert(&self, account: &Account) -> Result<AccountId, RepoError>;
@@ -29,10 +32,7 @@ pub trait AccountRepository: Send + Sync {
     async fn list_type_currency_pairs(&self, user_id: UserId) -> Result<Vec<(AccountType, Currency)>, RepoError>;
 }
 
-/// Thin adapter: your concrete SQLx repo implements the trait
-///
-/// This mirrors the "port/adapter" pattern and keeps the service layer
-/// decoupled from SQLx's exact API
+// SQLx adapter implementing AccountRepository
 #[async_trait]
 impl AccountRepository for AccountRepo {
     async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Account>, RepoError> {
@@ -45,6 +45,15 @@ impl AccountRepository for AccountRepo {
         account_type: AccountType,
     ) -> Result<bool, RepoError> {
         self.exists_by_account_type(user_id, account_type).await
+    }
+
+    async fn exists_by_type_and_currency(
+        &self,
+        user_id: UserId,
+        account_type: AccountType,
+        currency: Currency,
+    ) -> Result<bool, RepoError> {
+        self.exists_by_type_and_currency(user_id, account_type, currency).await
     }
 
     async fn exists_by_iban(&self, iban: &str) -> Result<bool, RepoError> {
@@ -68,7 +77,6 @@ impl AccountRepository for AccountRepo {
     }
 }
 
-/// Service responsible for account lifecycle and balance-heavy operations
 #[derive(Clone)]
 pub struct AccountService<R>
 where
@@ -89,7 +97,6 @@ where
         Self { repo }
     }
 
-    /// Accept raw strings from the API and perform parsing/validation here in the service.
     #[tracing::instrument(skip(self), fields(user_id = %user_id.0, account_type = %account_type_str, currency = %currency_str, initial_balance_cents))]
     pub async fn open_account_raw(
         &self,
@@ -98,6 +105,7 @@ where
         currency_str: String,
         initial_balance_cents: i64,
     ) -> ServiceResult<AccountId> {
+        // 1. Parse account_type and currency from API strings
         use core::str::FromStr;
         let account_type = AccountType::from_str(&account_type_str)
             .map_err(|_| ServiceError::Validation("invalid account_type".to_string()))?;
@@ -108,6 +116,7 @@ where
                 "initial_balance_cents must be >= 0".to_string(),
             ));
         }
+        // 2. Delegate to typed open_account
         self.open_account(user_id, account_type, currency, initial_balance_cents).await
     }
 
@@ -119,20 +128,23 @@ where
         initial_balance_cents: i64
     ) -> ServiceResult<AccountId> {
 
-        // 1. Enforce at-most-one account of a given type for this user
-        if self.repo.exists_by_account_type(user_id, account_type).await? {
+        // 1. Enforce at-most-one account per (type, currency) for this user
+        if self
+            .repo
+            .exists_by_type_and_currency(user_id, account_type, currency)
+            .await?
+        {
             return Err(ServiceError::conflict(
                 "account",
                 format!(
-                    "user {} already has an account type of {}",
-                    user_id.0,
-                    account_type.as_str()
+                    "you already have a {} {} account",
+                    account_type.as_str(),
+                    currency.as_str()
                 ),
             ));
         }
 
-        // 2. Try to insert with a freshly generated IBAN.
-        // Avoid an unbounded pre-check loop; rely on DB unique constraint and retry a few times.
+        // 2. Insert with generated IBAN; retry on unique violation
         const MAX_RETRIES: usize = 5;
         for attempt in 0..MAX_RETRIES {
             let iban = IBAN::generate()?;
@@ -148,13 +160,11 @@ where
             match self.repo.insert(&account).await {
                 Ok(id) => return Ok(id),
                 Err(RepoError::Db(sqlx::Error::Database(db_err))) => {
-                    // 23505 => unique violation (Postgres)
+                    // Postgres 23505 = unique violation (IBAN or user/type pair)
                     if db_err.code().as_deref() == Some("23505") {
-                        // Likely IBAN collision or unique (user_id, account_type)
-                        // If it's an IBAN clash, retry with a new IBAN; otherwise surface a conflict.
                         let msg = db_err.message().to_lowercase();
                         if msg.contains("iban") && attempt + 1 < MAX_RETRIES {
-                            continue; // retry with a different IBAN
+                            continue;
                         } else {
                             return Err(ServiceError::conflict(
                                 "account",
@@ -173,7 +183,6 @@ where
         Err(ServiceError::conflict("account", "unable to allocate a unique IBAN after retries"))
     }
 
-    /// Load a single account, mapping RepoError::NotFound into ServiceError::NotFound
     #[tracing::instrument(skip(self), fields(account_id = %account_id.0))]
     pub async fn get_account(&self, account_id: AccountId) -> ServiceResult<Account> {
         match self.repo.get_by_id(account_id).await {
@@ -187,29 +196,26 @@ where
         &self,
         user_id: UserId,
     ) -> ServiceResult<AccountAvailability> {
-
+        // 1. Load owned (type, currency) pairs
         let all_types = AccountType::all();
         let all_currencies = Currency::all();
 
-        // `open_account` enforces at-most-one account *per account type* (see
-        // `exists_by_account_type`), regardless of currency. Availability must
-        // mirror that rule: once the user owns ANY account of a given type, every
-        // currency for that type becomes unavailable.
-        let owned_types: HashSet<AccountType> = self
+        // One account per (type, currency). Mark each owned pair unavailable.
+        let owned_pairs: HashSet<(AccountType, Currency)> = self
             .repo
             .list_type_currency_pairs(user_id)
             .await?
             .into_iter()
-            .map(|(account_type, _currency)| account_type)
             .collect();
 
+        // 2. Build available currencies per account type
         let mut available = HashMap::new();
         for &account_type in all_types {
-            let free_currencies: Vec<Currency> = if owned_types.contains(&account_type) {
-                Vec::new()
-            } else {
-                all_currencies.to_vec()
-            };
+            let free_currencies: Vec<Currency> = all_currencies
+                .iter()
+                .copied()
+                .filter(|currency| !owned_pairs.contains(&(account_type, *currency)))
+                .collect();
             available.insert(account_type, free_currencies);
         }
 

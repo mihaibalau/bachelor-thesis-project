@@ -3,7 +3,6 @@
 #include <assert.h>
 #include <stdlib.h>
 
-/* Concrete representation, hidden from consumers. */
 struct Account {
     bool has_id;
     AccountId id;
@@ -26,6 +25,7 @@ static bool account_init(
     Account *out,
     DomainError *err
 ) {
+    // 1. Validate args and non-negative balance.
     if (!out || !iban) {
         if (err) *err = domain_error_validation("Account: invalid arguments");
         return false;
@@ -56,8 +56,6 @@ static Account *account_new_object(DomainError *err) {
     }
     return a;
 }
-
-/* Public API */
 
 Account *account_create(
     UserId user_id,
@@ -105,8 +103,6 @@ Account *account_rehydrate(
     return a;
 }
 
-/* Getters */
-
 bool account_has_id(const Account *a) {
     assert(a);
     return a->has_id;
@@ -141,8 +137,6 @@ const IBAN *account_iban(const Account *a) {
     assert(a);
     return &a->iban;
 }
-
-/* Business logic */
 
 bool account_credit(Account *a, int64_t amount_cents, DomainError *err) {
     if (!a) {
@@ -187,8 +181,6 @@ void account_set_id_after_insert(Account *a, AccountId id) {
     a->has_id = true;
     a->id = id;
 }
-
-/* Destructor */
 
 void account_free(Account *a) {
     free(a);

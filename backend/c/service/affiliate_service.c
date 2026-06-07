@@ -86,10 +86,6 @@ static bool aff_repo_exists_adapter(
         err);
 }
 
-/*
- * Static, read-only vtable — one instance shared by all repos.
- * §3.3: the vtable IS the trait object in C.
- */
 static const AffiliateRepositoryVTable AFF_REPO_VTABLE = {
     aff_repo_get_adapter,
     aff_repo_list_for_owner_adapter,
@@ -106,7 +102,7 @@ AffiliateRepository aff_repository_from_repo(AffiliateRepo *repo) {
     return r;
 }
 
-/* AccountRepo adapter — get_by_id + list_for_user. */
+// AccountRepo adapter.
 
 static bool aff_acct_repo_get_by_id_adapter(
     void *ctx,
@@ -140,7 +136,7 @@ AffSvcAccountRepository aff_account_repository_from_repo(AccountRepo *repo) {
     return r;
 }
 
-/* UserRepo adapter — get_by_id + get_by_tag. */
+// UserRepo adapter.
 
 static bool aff_user_repo_get_by_id_adapter(
     void *ctx, UserId id, User **out, RepoError *err)
@@ -188,8 +184,6 @@ void affiliate_service_free(AffiliateService *svc) {
     free(svc);
 }
 
-/*  Public methods                                                       */
-
 bool affiliate_service_create_affiliate(
     AffiliateService *svc,
     UserId owner_user_id,
@@ -203,23 +197,7 @@ bool affiliate_service_create_affiliate(
         return false;
     }
 
-    /*
-     * Step 1: verify the recipient account actually exists.
-     *
-     * §4.2 Error Propagation: RepoError::NotFound is mapped to a
-     * ServiceError::Validation (not NotFound) because from the caller's
-     * perspective "you tried to create an affiliate for a non-existing
-     * account" is a validation mistake, not a missing-affiliate error.
-     *
-     * Mirrors Rust:
-     *   self.account_repo.get_by_id(recipient_sub_account_id)
-     *       .await
-     *       .map_err(|e| match e {
-     *           RepoError::NotFound(_) =>
-     *               ServiceError::Validation("cannot create affiliate ..."),
-     *           other => ServiceError::from(other),
-     *       })?;
-     */
+    // 1. Verify recipient account exists (NotFound -> Validation).
     Account  *tmp_account = NULL;
     RepoError rerr;
 
@@ -239,17 +217,9 @@ bool affiliate_service_create_affiliate(
         return false;
     }
 
-    /* We only needed existence — free the fetched account immediately. */
     account_free(tmp_account);
 
-    /*
-     * Step 2: prevent duplicate links.
-     *
-     * Mirrors Rust:
-     *   if self.affiliate_repo.exists(owner_user_id, recipient_sub_account_id).await? {
-     *       return Err(ServiceError::Conflict { entity: "affiliate", ... });
-     *   }
-     */
+    // 2. Reject duplicate affiliate link.
     bool already_exists = false;
     if (!svc->aff_repo.vtable->exists(
             svc->aff_repo.ctx,
@@ -268,17 +238,7 @@ bool affiliate_service_create_affiliate(
         return false;
     }
 
-    /*
-     * Step 3: build the domain object.
-     *
-     * §4.1 Type-Driven Invariants: affiliate_new trims and validates the
-     * nickname — empty or whitespace-only values are rejected here, before
-     * any SQL is executed.
-     *
-     * Mirrors Rust:
-     *   let affiliate = Affiliate::new(owner_user_id,
-     *                                   recipient_sub_account_id, nickname)?;
-     */
+    // 3. Build domain Affiliate (nickname validated).
     DomainError derr;
     Affiliate *affiliate = affiliate_new(
         owner_user_id,
@@ -291,12 +251,7 @@ bool affiliate_service_create_affiliate(
         return false;
     }
 
-    /*
-     * Step 4: persist through the repository interface.
-     *
-     * Mirrors Rust:
-     *   self.affiliate_repo.insert(&affiliate).await?;
-     */
+    // 4. Persist affiliate.
     bool ok = svc->aff_repo.vtable->insert(
         svc->aff_repo.ctx, affiliate, &rerr);
 
@@ -324,15 +279,6 @@ bool affiliate_service_list_for_owner(
         return false;
     }
 
-    /*
-     * Pure delegation to the repository.
-     *
-     * Mirrors Rust:
-     *   pub async fn list_for_owner(&self, owner_user_id) -> ServiceResult<Vec<Affiliate>> {
-     *       let list = self.affiliate_repo.list_for_owner(owner_user_id).await?;
-     *       Ok(list)
-     *   }
-     */
     RepoError rerr;
     bool ok = svc->aff_repo.vtable->list_for_owner(
         svc->aff_repo.ctx,
@@ -363,24 +309,6 @@ bool affiliate_service_rename_affiliate(
         return false;
     }
 
-    /*
-     * The repo's update_nickname already calls affiliate_new internally
-     * to validate the nickname before running the SQL UPDATE.
-     * Domain validation is therefore enforced at the repo boundary —
-     * the service does not need to repeat it.
-     *
-     * §4.2: RepoError::NotFound is converted to ServiceError::NotFound
-     * so the caller can distinguish "link doesn't exist" from infrastructure
-     * failures without seeing RepoError directly.
-     *
-     * Mirrors Rust:
-     *   pub async fn rename_affiliate(&self, ..., nickname) -> ServiceResult<()> {
-     *       self.affiliate_repo
-     *           .update_nickname(owner_user_id, recipient_sub_account_id, &nickname)
-     *           .await?;
-     *       Ok(())
-     *   }
-     */
     RepoError rerr;
     bool ok = svc->aff_repo.vtable->update_nickname(
         svc->aff_repo.ctx,
@@ -414,16 +342,6 @@ bool affiliate_service_delete_affiliate(
         return false;
     }
 
-    /*
-     * §4.2: translate RepoError::NotFound -> ServiceError::NotFound.
-     * All other repo errors bubble up as ServiceError::Repo.
-     *
-     * Mirrors Rust:
-     *   pub async fn delete_affiliate(&self, ...) -> ServiceResult<()> {
-     *       self.affiliate_repo.delete(owner_user_id, recipient_sub_account_id).await?;
-     *       Ok(())
-     *   }
-     */
     RepoError rerr;
     bool ok = svc->aff_repo.vtable->delete_fn(
         svc->aff_repo.ctx,
@@ -443,8 +361,6 @@ bool affiliate_service_delete_affiliate(
     if (err) *err = service_error_ok();
     return true;
 }
-
-/*  View / read-model helpers + use-cases                                */
 
 void paginated_affiliates_view_free(PaginatedAffiliatesView *view) {
     if (!view) return;
@@ -479,7 +395,6 @@ static void trim_copy(char *dst, size_t dst_size, const char *src) {
     dst[len] = '\0';
 }
 
-/* Mirrors Rust get(): NotFound -> ServiceError::NotFound("affiliate"). */
 static bool aff_get(AffiliateService *svc, UserId owner, AccountId sub,
                     Affiliate **out, ServiceError *err) {
     RepoError rerr;
@@ -493,7 +408,7 @@ static bool aff_get(AffiliateService *svc, UserId owner, AccountId sub,
     return true;
 }
 
-/* Build an AffiliateView from an Affiliate by joining account + user. */
+// Join affiliate with account + user for AffiliateView.
 static bool build_affiliate_view(AffiliateService *svc, const Affiliate *aff,
                                  AffiliateView *out, ServiceError *err) {
     AccountId sub = affiliate_recipient_sub_account_id(aff);
@@ -525,6 +440,95 @@ static bool build_affiliate_view(AffiliateService *svc, const Affiliate *aff,
 
     user_free(user);
     account_free(account);
+    if (err) *err = service_error_ok();
+    return true;
+}
+
+bool affiliate_service_validate_send_target(
+    AffiliateService *svc,
+    UserId owner_user_id,
+    AccountId from_account_id,
+    AccountId recipient_account_id,
+    ServiceError *err)
+{
+    if (!svc) {
+        if (err) *err = service_error_validation(
+            "AffiliateService::validate_send_target: invalid arguments");
+        return false;
+    }
+
+    Account  *from_acc = NULL, *to_acc = NULL;
+    RepoError rerr;
+
+    if (!svc->account_repo.vtable->get_by_id(
+            svc->account_repo.ctx, from_account_id, &from_acc, &rerr)) {
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+    if (!svc->account_repo.vtable->get_by_id(
+            svc->account_repo.ctx, recipient_account_id, &to_acc, &rerr)) {
+        account_free(from_acc);
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    if (account_type_get(to_acc) != ACCOUNT_TYPE_REGULAR) {
+        account_free(from_acc);
+        account_free(to_acc);
+        if (err) *err = service_error_validation("recipient must be a Regular account");
+        return false;
+    }
+
+    if (account_currency(from_acc) != account_currency(to_acc)) {
+        char msg[128];
+        snprintf(msg, sizeof msg,
+                 "This affiliate does not have a Regular %s account.",
+                 currency_as_str(account_currency(from_acc)));
+        account_free(from_acc);
+        account_free(to_acc);
+        if (err) *err = service_error_validation(msg);
+        return false;
+    }
+
+    UserId recipient_user_id = account_user_id(to_acc);
+    account_free(from_acc);
+    account_free(to_acc);
+
+    Affiliate **affiliates = NULL;
+    size_t      aff_count  = 0;
+    if (!svc->aff_repo.vtable->list_for_owner(
+            svc->aff_repo.ctx, owner_user_id, &affiliates, &aff_count, &rerr)) {
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    bool found = false;
+    for (size_t i = 0; i < aff_count; ++i) {
+        AccountId saved_id = affiliate_recipient_sub_account_id(affiliates[i]);
+        Account  *saved_acc = NULL;
+        if (!svc->account_repo.vtable->get_by_id(
+                svc->account_repo.ctx, saved_id, &saved_acc, &rerr)) {
+            for (size_t j = 0; j < aff_count; ++j) affiliate_free(affiliates[j]);
+            free(affiliates);
+            if (err) *err = service_error_from_repo(&rerr);
+            return false;
+        }
+        if (account_user_id(saved_acc).value == recipient_user_id.value) {
+            found = true;
+            account_free(saved_acc);
+            break;
+        }
+        account_free(saved_acc);
+    }
+
+    for (size_t i = 0; i < aff_count; ++i) affiliate_free(affiliates[i]);
+    free(affiliates);
+
+    if (!found) {
+        if (err) *err = service_error_validation("recipient is not one of your affiliates");
+        return false;
+    }
+
     if (err) *err = service_error_ok();
     return true;
 }
@@ -570,7 +574,7 @@ bool affiliate_service_list_affiliates_view(
         return false;
     }
 
-    /* 1. Load the owner's affiliates. */
+    // 1. Load the owner's affiliates.
     Affiliate **affiliates = NULL;
     size_t      aff_count  = 0;
     RepoError   rerr;
@@ -581,7 +585,7 @@ bool affiliate_service_list_affiliates_view(
         return false;
     }
 
-    /* 2. Enrich each into an AffiliateView. */
+    // 2. Enrich each into an AffiliateView.
     AffiliateView *items = NULL;
     if (aff_count > 0) {
         items = (AffiliateView *)calloc(aff_count, sizeof(AffiliateView));
@@ -593,20 +597,108 @@ bool affiliate_service_list_affiliates_view(
         }
     }
 
-    for (size_t i = 0; i < aff_count; ++i) {
-        if (!build_affiliate_view(svc, affiliates[i], &items[i], err)) {
-            for (size_t j = 0; j < aff_count; ++j) affiliate_free(affiliates[j]);
+    size_t n = 0;
+    if (params->for_send_currency_opt) {
+        Currency want_curr;
+        DomainError derr;
+        if (!currency_from_str(params->for_send_currency_opt, &want_curr, &derr)) {
+            for (size_t i = 0; i < aff_count; ++i) affiliate_free(affiliates[i]);
             free(affiliates);
             free(items);
+            if (err) *err = service_error_validation("invalid currency");
             return false;
         }
+        const char *want = currency_as_str(want_curr);
+
+        char (*seen_nicknames)[64] = (char (*)[64])calloc(aff_count > 0 ? aff_count : 1, 64);
+        if (!seen_nicknames) {
+            for (size_t i = 0; i < aff_count; ++i) affiliate_free(affiliates[i]);
+            free(affiliates);
+            free(items);
+            if (err) *err = service_error_internal("out of memory");
+            return false;
+        }
+        size_t seen_count = 0;
+
+        for (size_t i = 0; i < aff_count; ++i) {
+            AffiliateView base;
+            if (!build_affiliate_view(svc, affiliates[i], &base, err)) {
+                for (size_t j = 0; j < aff_count; ++j) affiliate_free(affiliates[j]);
+                free(affiliates);
+                free(items);
+                return false;
+            }
+
+            char nick_lower[64];
+            str_to_lower(nick_lower, sizeof nick_lower, base.nickname);
+            bool dup = false;
+            for (size_t s = 0; s < seen_count; ++s) {
+                if (strcmp(seen_nicknames[s], nick_lower) == 0) { dup = true; break; }
+            }
+            if (dup) continue;
+
+            AccountId saved_id = { .value = base.recipient_sub_account_id };
+            Account  *saved_acc = NULL;
+            RepoError rerr;
+            if (!svc->account_repo.vtable->get_by_id(
+                    svc->account_repo.ctx, saved_id, &saved_acc, &rerr)) {
+                for (size_t j = 0; j < aff_count; ++j) affiliate_free(affiliates[j]);
+                free(affiliates);
+                free(items);
+                if (err) *err = service_error_from_repo(&rerr);
+                return false;
+            }
+
+            Account **target_accs = NULL;
+            size_t    target_n    = 0;
+            if (!svc->account_repo.vtable->list_for_user(
+                    svc->account_repo.ctx, account_user_id(saved_acc),
+                    &target_accs, &target_n, &rerr)) {
+                account_free(saved_acc);
+                for (size_t j = 0; j < aff_count; ++j) affiliate_free(affiliates[j]);
+                free(affiliates);
+                free(items);
+                if (err) *err = service_error_from_repo(&rerr);
+                return false;
+            }
+            account_free(saved_acc);
+
+            bool matched = false;
+            for (size_t t = 0; t < target_n; ++t) {
+                if (account_type_get(target_accs[t]) != ACCOUNT_TYPE_REGULAR) continue;
+                if (account_currency(target_accs[t]) != want_curr) continue;
+                items[n] = base;
+                items[n].recipient_sub_account_id = account_id(target_accs[t]).value;
+                strncpy(items[n].currency, want, sizeof items[n].currency - 1);
+                items[n].currency[sizeof items[n].currency - 1] = '\0';
+                strncpy(seen_nicknames[seen_count], nick_lower,
+                        sizeof seen_nicknames[seen_count] - 1);
+                seen_nicknames[seen_count][sizeof seen_nicknames[seen_count] - 1] = '\0';
+                seen_count++;
+                n++;
+                matched = true;
+                break;
+            }
+            for (size_t t = 0; t < target_n; ++t) account_free(target_accs[t]);
+            free(target_accs);
+            (void)matched;
+        }
+        free(seen_nicknames);
+    } else {
+        for (size_t i = 0; i < aff_count; ++i) {
+            if (!build_affiliate_view(svc, affiliates[i], &items[i], err)) {
+                for (size_t j = 0; j < aff_count; ++j) affiliate_free(affiliates[j]);
+                free(affiliates);
+                free(items);
+                return false;
+            }
+        }
+        n = aff_count;
     }
     for (size_t i = 0; i < aff_count; ++i) affiliate_free(affiliates[i]);
     free(affiliates);
 
-    size_t n = aff_count;
-
-    /* 3. Search filter (min 2 chars), case-insensitive on nickname/full name. */
+    // 3. Apply search filter (min 2 chars).
     if (params->search_opt) {
         char needle[128];
         char trimmed[128];
@@ -625,8 +717,8 @@ bool affiliate_service_list_affiliates_view(
         }
     }
 
-    /* 4. Currency filter (validate the symbol first). */
-    if (params->currency_opt) {
+    // 4. Apply currency filter.
+    if (!params->for_send_currency_opt && params->currency_opt) {
         Currency parsed;
         DomainError derr;
         if (!currency_from_str(params->currency_opt, &parsed, &derr)) {
@@ -643,7 +735,7 @@ bool affiliate_service_list_affiliates_view(
         n = w;
     }
 
-    /* 5. Sort by nickname (ascending), then reverse for "desc". */
+    // 5. Sort by nickname.
     if (n > 1) qsort(items, n, sizeof(AffiliateView), compare_view_by_nickname);
     bool desc = params->sort_opt && strcmp(params->sort_opt, "desc") == 0;
     if (desc && n > 1) {
@@ -654,7 +746,7 @@ bool affiliate_service_list_affiliates_view(
         }
     }
 
-    /* 6. Pagination: page>=1, page_size in [1,100]. */
+    // 6. Paginate results.
     uint32_t page = params->has_page ? params->page : 1;
     if (page < 1) page = 1;
     uint32_t page_size = params->has_page_size ? params->page_size : 20;
@@ -709,21 +801,26 @@ bool affiliate_service_resolve_target_by_tag(
         return false;
     }
 
-    /* Resolve the target user; NotFound -> Validation("user not found"). */
+    // 1. Resolve target user by tag.
     User     *target_user = NULL;
     RepoError rerr;
     if (!svc->user_repo.vtable->get_by_tag(
             svc->user_repo.ctx, tag_trim, &target_user, &rerr)) {
-        if (rerr.code == REPO_ERROR_NOT_FOUND)
-            { if (err) *err = service_error_validation("user not found"); }
-        else
-            { if (err) *err = service_error_from_repo(&rerr); }
+        if (rerr.code == REPO_ERROR_NOT_FOUND) {
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "No Gentlix user was found with tag \"%s\". Check the spelling and try again.",
+                     tag_trim);
+            if (err) *err = service_error_validation(msg);
+        } else {
+            if (err) *err = service_error_from_repo(&rerr);
+        }
         return false;
     }
 
     UserId target_user_id = user_id(target_user);
 
-    /* Load owner + target accounts. */
+    // 2. Load owner and target accounts.
     Account **owner_accs = NULL,  **target_accs = NULL;
     size_t    owner_n    = 0,       target_n     = 0;
 
@@ -742,7 +839,7 @@ bool affiliate_service_resolve_target_by_tag(
         return false;
     }
 
-    /* Owner currency set. */
+    // 3. Match currencies owner can send to.
     bool owner_has[CURRENCY_COUNT] = { false };
     for (size_t i = 0; i < owner_n; ++i) {
         Currency c = account_currency(owner_accs[i]);
@@ -756,6 +853,9 @@ bool affiliate_service_resolve_target_by_tag(
             target_n, sizeof(ResolveAffiliateCurrencyOptionView));
 
     for (size_t i = 0; i < target_n; ++i) {
+        if (account_type_get(target_accs[i]) != ACCOUNT_TYPE_REGULAR) {
+            continue;
+        }
         Currency c = account_currency(target_accs[i]);
         if ((size_t)c < CURRENCY_COUNT && owner_has[c]) {
             strncpy(options[opt_count].currency, currency_as_str(c),
@@ -775,7 +875,7 @@ bool affiliate_service_resolve_target_by_tag(
         free(options);
         user_free(target_user);
         if (err) *err = service_error_validation(
-            "no compatible currencies between owner and target user");
+            "This user has no Regular account in a currency you can send to. Transfers can only be made to Regular accounts.");
         return false;
     }
 

@@ -3,11 +3,10 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     middleware,
-    routing::{delete, get, patch, post},
+    routing::{get, post},
     Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::info;
 
 use crate::{
     domain::ids::{AccountId, UserId},
@@ -22,8 +21,6 @@ use crate::{
         affiliate::ListAffiliatesParams,
     },
 };
-
-// ── Request DTOs ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct CreateAffiliateRequest {
@@ -55,10 +52,9 @@ pub struct ListAffiliatesQuery {
     pub page_size: Option<u32>,
     pub search: Option<String>,
     pub currency: Option<String>,
+    pub for_send_currency: Option<String>,
     pub sort: Option<String>, // "asc" | "desc"
 }
-
-// ── Response DTOs ────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct AffiliateResponse {
@@ -89,8 +85,6 @@ pub struct ResolveAffiliateTargetResponse {
     pub currencies: Vec<ResolveAffiliateCurrencyOption>,
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
-
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let private = Router::new()
 
@@ -111,18 +105,15 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new().merge(private)
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
 async fn create_affiliate(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
     Json(body): Json<CreateAffiliateRequest>,
 ) -> ApiResult<()> {
-    info!(method = "POST", path = "/api/affiliates", "incoming request");
-
     let owner_id = UserId::from(claims.sub);
     let recipient_sub_account_id = AccountId::from(body.recipient_sub_account_id);
 
+    // 1. Delegate to service
     state
         .affiliate_svc
         .create_affiliate(owner_id, recipient_sub_account_id, body.nickname)
@@ -136,13 +127,6 @@ async fn update_affiliate_nickname(
     Path(sub_account_id): Path<i64>,
     Json(body): Json<UpdateAffiliateNicknameRequest>,
 ) -> ApiResult<()> {
-    info!(
-        method = "PATCH",
-        path = "/api/affiliates/{sub_account_id}",
-        sub_account_id,
-        "incoming request"
-    );
-
     let owner_id = UserId::from(claims.sub);
     let recipient_sub_account_id = AccountId::from(sub_account_id);
 
@@ -158,13 +142,6 @@ async fn delete_affiliate(
     Extension(claims): Extension<Claims>,
     Path(sub_account_id): Path<i64>,
 ) -> ApiResult<()> {
-    info!(
-        method = "DELETE",
-        path = "/api/affiliates/{sub_account_id}",
-        sub_account_id,
-        "incoming request"
-    );
-
     let owner_id = UserId::from(claims.sub);
     let recipient_sub_account_id = AccountId::from(sub_account_id);
 
@@ -180,13 +157,6 @@ async fn get_affiliate(
     Extension(claims): Extension<Claims>,
     Path(sub_account_id): Path<i64>,
 ) -> ApiResult<Json<AffiliateResponse>> {
-    info!(
-        method = "GET",
-        path = "/api/affiliates/{sub_account_id}",
-        sub_account_id,
-        "incoming request"
-    );
-
     let owner_id = UserId::from(claims.sub);
     let recipient_sub_account_id = AccountId::from(sub_account_id);
 
@@ -209,15 +179,15 @@ async fn list_affiliates(
     Extension(claims): Extension<Claims>,
     Query(query): Query<ListAffiliatesQuery>,
 ) -> ApiResult<Json<PaginatedAffiliatesResponse>> {
-    info!(method = "GET", path = "/api/affiliates", "incoming request");
-
     let owner_id = UserId::from(claims.sub);
 
+    // 1. Map query → service params, delegate
     let params = ListAffiliatesParams {
         page: query.page,
         page_size: query.page_size,
         search: query.search,
         currency: query.currency,
+        for_send_currency: query.for_send_currency,
         sort: query.sort,
     };
 
@@ -227,6 +197,7 @@ async fn list_affiliates(
         .await
         .map_err(ApiError::from)?;
 
+    // 2. Map view → response DTO
     let items: Vec<AffiliateResponse> = view
         .items
         .into_iter()
@@ -251,10 +222,9 @@ async fn resolve_affiliate_target(
     Extension(claims): Extension<Claims>,
     Json(body): Json<ResolveAffiliateTargetRequest>,
 ) -> ApiResult<Json<ResolveAffiliateTargetResponse>> {
-    info!(method = "POST", path = "/api/affiliates/resolve-target", "incoming request");
-
     let owner_id = UserId::from(claims.sub);
 
+    // 1. Resolve by identifier type
     let view = match body.identifier_type {
         IdentifierType::Tag => state
             .affiliate_svc

@@ -15,6 +15,7 @@ impl Affiliate {
         recipient_sub_account_id: AccountId,
         nickname: impl Into<String>,
     ) -> Result<Self, DomainError> {
+        // 1. Trim and validate nickname
         let nickname = normalize_required(nickname.into(), "nickname")?;
 
         Ok(Self {
@@ -39,6 +40,7 @@ impl Affiliate {
 }
 
 fn normalize_required(s: String, field: &str) -> Result<String, DomainError> {
+    // 1. Trim whitespace; reject if nothing remains
     let v = s.trim().to_string();
     if v.is_empty() {
         return Err(DomainError::validation(format!("{field} must not be empty")));

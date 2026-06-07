@@ -109,6 +109,10 @@ add_executable(c
         # util
         util/include/util_str.h
         util/util_str.c
+        util/include/dotenv.h
+        util/dotenv.c
+        util/include/log.h
+        util/log.c
 
         # service
         service/include/service_error.h
@@ -139,6 +143,8 @@ add_executable(c
         server/include/http_affiliates.h
         server/http_transactions.c
         server/include/http_transactions.h
+        server/http_dashboard.c
+        server/include/http_dashboard.h
         server/http_router.c
         server/include/http_router.h
         server/http_server.c
@@ -169,4 +175,18 @@ target_link_libraries(c PRIVATE
         ${LIBCRYPTO}
         ${LIBARGON2}
         pq
+)
+
+# IDE runs (CLion) execute from cmake-build-debug/ — copy .env next to c.exe
+if(EXISTS "${CMAKE_SOURCE_DIR}/.env")
+    add_custom_command(TARGET c POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/.env"
+            "$<TARGET_FILE_DIR:c>/.env"
+        COMMENT "Copying .env to build output directory"
+    )
+endif()
+
+set_target_properties(c PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )

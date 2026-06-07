@@ -1,0 +1,9 @@
+build/
+build-review/
+cmake-build-debug/
+.idea/
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore

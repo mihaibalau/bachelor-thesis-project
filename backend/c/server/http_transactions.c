@@ -2,6 +2,11 @@
 #include "include/http_util.h"
 #include "include/http_auth.h"
 #include "service/include/transaction_service.h"
+#include "service/include/affiliate_service.h"
+#include "service/include/user_service.h"
+#include "domain/include/account.h"
+#include "domain/include/account_type.h"
+#include "domain/include/currency.h"
 #include "domain/include/transaction.h"
 #include "domain/include/transaction_type.h"
 #include "domain/include/ids.h"
@@ -13,14 +18,9 @@
 #include <stdio.h>
 #include <time.h>
 
-/*
- * Transactions routes. The server layer only parses the request, extracts the
- * authenticated user, calls the service, and serializes the result. Every
- * business rule lives in TransactionService.
- */
+// Transactions routes: parse/serialize only; business rules in TransactionService.
 
-/* Format a time_t as RFC3339 in UTC (whole seconds), matching chrono's
- * DateTime<Utc>::to_rfc3339() for sub-second-free timestamps. */
+// Format time_t as RFC3339 UTC (chrono parity).
 static void rfc3339_utc(time_t t, char *buf, size_t buf_size) {
     struct tm tmv;
 #ifdef _WIN32
@@ -31,9 +31,7 @@ static void rfc3339_utc(time_t t, char *buf, size_t buf_size) {
     strftime(buf, buf_size, "%Y-%m-%dT%H:%M:%S+00:00", &tmv);
 }
 
-/* Civil UTC date -> time_t via days-from-civil (Howard Hinnant's algorithm),
- * mirroring the service's utc_civil_to_time so the current-month window here
- * matches the [start, end] bounds the Rust route computes with chrono. */
+// Civil UTC date -> time_t (days-from-civil; matches service/Rust bounds).
 static time_t utc_civil_to_time_h(int year, int month, int day,
                                   int hour, int min, int sec) {
     int y = year;
@@ -47,8 +45,7 @@ static time_t utc_civil_to_time_h(int year, int month, int day,
 }
 
 static enum MHD_Result send_transaction_id(struct MHD_Connection *conn, TransactionId id) {
-    /* Rust returns Json(TransactionId) where TransactionId is a serde newtype,
-     * i.e. a bare JSON integer. */
+    // Bare JSON integer (serde newtype parity).
     char buf[32];
     snprintf(buf, sizeof buf, "%lld", (long long)id.value);
     return http_send_json(conn, MHD_HTTP_OK, buf);
@@ -61,8 +58,8 @@ static enum MHD_Result handle_deposit(AppState *state, struct MHD_Connection *co
     json_t *acc_j = json_object_get(root, "account_id");
     json_t *amt_j = json_object_get(root, "amount");
     if (!json_is_integer(acc_j) || !json_is_integer(amt_j)) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"account_id and amount are required\"}");
     }
     AccountId account_id = { (int64_t)json_integer_value(acc_j) };
@@ -81,8 +78,8 @@ static enum MHD_Result handle_withdrawal(AppState *state, struct MHD_Connection 
     json_t *acc_j = json_object_get(root, "account_id");
     json_t *amt_j = json_object_get(root, "amount");
     if (!json_is_integer(acc_j) || !json_is_integer(amt_j)) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"account_id and amount are required\"}");
     }
     AccountId account_id = { (int64_t)json_integer_value(acc_j) };
@@ -104,14 +101,18 @@ static enum MHD_Result handle_send(AppState *state, struct MHD_Connection *conn,
     const char *message = json_string_value(json_object_get(root, "message"));
     if (!json_is_integer(from_j) || !json_is_integer(to_j) ||
         !json_is_integer(val_j) || !message) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"from_account_id, recipient_account_id, value_cents and message are required\"}");
     }
     AccountId from_id = { (int64_t)json_integer_value(from_j) };
     AccountId to_id   = { (int64_t)json_integer_value(to_j) };
     TransactionId id;
     ServiceError serr;
+    if (!affiliate_service_validate_send_target(
+            state->affiliate_svc, claims.sub, from_id, to_id, &serr)) {
+        return http_send_service_error(conn, &serr);
+    }
     if (!transaction_service_record_send_for_user(
             state->tx_svc, claims.sub, from_id, to_id,
             (int64_t)json_integer_value(val_j), message, &id, &serr)) {
@@ -126,8 +127,8 @@ static enum MHD_Result handle_transfer(AppState *state, struct MHD_Connection *c
     json_t *to_j   = json_object_get(root, "to_account_id");
     json_t *val_j  = json_object_get(root, "value_cents");
     if (!json_is_integer(from_j) || !json_is_integer(to_j) || !json_is_integer(val_j)) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"from_account_id, to_account_id and value_cents are required\"}");
     }
     AccountId from_id = { (int64_t)json_integer_value(from_j) };
@@ -148,10 +149,10 @@ static enum MHD_Result handle_payment(AppState *state, struct MHD_Connection *co
     json_t *amt_j  = json_object_get(root, "amount");
     const char *category      = json_string_value(json_object_get(root, "category"));
     const char *merchant_name = json_string_value(json_object_get(root, "merchant_name"));
-    const char *note          = json_string_value(json_object_get(root, "note")); /* opt */
+    const char *note          = json_string_value(json_object_get(root, "note"));
     if (!json_is_integer(from_j) || !json_is_integer(amt_j) || !category || !merchant_name) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"from_account_id, amount, category and merchant_name are required\"}");
     }
     AccountId from_id = { (int64_t)json_integer_value(from_j) };
@@ -196,7 +197,7 @@ static enum MHD_Result dispatch_post(AppState *state, struct MHD_Connection *con
     return result;
 }
 
-/* ── GET handlers ────────────────────────────────────────────────────────── */
+// ── GET handlers ──────────────────────────────────────────────────────────
 
 static json_t *transaction_to_json(const Transaction *tx) {
     char recorded[40];
@@ -223,18 +224,20 @@ static enum MHD_Result handle_recent(AppState *state, struct MHD_Connection *con
 
     const char *account_id_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "account_id");
     const char *limit_s      = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "limit");
+    const char *offset_s     = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "offset");
     if (!account_id_s) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\",\"message\":\"account_id is required\"}");
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\",\"message\":\"account_id is required\"}");
     }
 
     AccountId account_id = { (int64_t)strtoll(account_id_s, NULL, 10) };
-    int64_t limit = limit_s ? (int64_t)strtoll(limit_s, NULL, 10) : 0; /* 0 → service default 10 */
+    int64_t limit = limit_s ? (int64_t)strtoll(limit_s, NULL, 10) : 0;
+    int64_t offset = offset_s ? (int64_t)strtoll(offset_s, NULL, 10) : 0;
 
     Transaction **txs = NULL;
     size_t count = 0;
     if (!transaction_service_list_recent_for_user(
-            state->tx_svc, claims.sub, account_id, limit, &txs, &count, &serr)) {
+            state->tx_svc, claims.sub, account_id, limit, offset, &txs, &count, &serr)) {
         return http_send_service_error(conn, &serr);
     }
 
@@ -271,12 +274,12 @@ static enum MHD_Result handle_statement(AppState *state, struct MHD_Connection *
     const char *limit_s      = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "limit");
     const char *offset_s     = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "offset");
     if (!account_id_s) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\",\"message\":\"account_id is required\"}");
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\",\"message\":\"account_id is required\"}");
     }
 
     AccountId account_id = { (int64_t)strtoll(account_id_s, NULL, 10) };
-    int64_t limit  = limit_s  ? (int64_t)strtoll(limit_s, NULL, 10)  : 0;  /* 0 → service default 100 */
+    int64_t limit  = limit_s  ? (int64_t)strtoll(limit_s, NULL, 10)  : 0;
     int64_t offset = offset_s ? (int64_t)strtoll(offset_s, NULL, 10) : 0;
 
     AccountStatementEntry *entries = NULL;
@@ -314,6 +317,206 @@ static enum MHD_Result handle_statement(AppState *state, struct MHD_Connection *
     return ret;
 }
 
+static bool parse_ymd_to_time(const char *s, time_t *out_end_of_day) {
+    int y, m, d;
+    if (sscanf(s, "%d-%d-%d", &y, &m, &d) != 3) return false;
+    *out_end_of_day = utc_civil_to_time_h(y, m, d, 23, 59, 59);
+    return true;
+}
+
+static enum MHD_Result handle_transaction_summary(AppState *state, struct MHD_Connection *conn) {
+    AuthClaims claims;
+    ServiceError serr;
+    if (!http_require_auth(conn, state, &claims, &serr)) {
+        return http_send_json(conn, MHD_HTTP_UNAUTHORIZED,
+            "{\"status\":401,\"code\":\"unauthorized\",\"message\":\"missing or invalid token\"}");
+    }
+
+    const char *limit_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "per_account_limit");
+    int64_t per_account_limit = limit_s ? (int64_t)strtoll(limit_s, NULL, 10) : 500;
+
+    const char *from_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "from");
+    const char *to_s   = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "to");
+    const char *account_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "account_id");
+    const char *type_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "transaction_type");
+
+    time_t now = time(NULL);
+    struct tm now_tm;
+#ifdef _WIN32
+    gmtime_s(&now_tm, &now);
+#else
+    gmtime_r(&now, &now_tm);
+#endif
+
+    bool has_from = false, has_to = false;
+    time_t from_t = 0, to_t = now;
+
+    if (from_s && from_s[0]) {
+        int y, m, d;
+        if (sscanf(from_s, "%d-%d-%d", &y, &m, &d) != 3) {
+            ServiceError e = service_error_validation("invalid 'from' date (expected YYYY-MM-DD)");
+            return http_send_service_error(conn, &e);
+        }
+        from_t = utc_civil_to_time_h(y, m, d, 0, 0, 0);
+        has_from = true;
+    } else {
+        from_t = utc_civil_to_time_h(now_tm.tm_year + 1900, now_tm.tm_mon + 1, 1, 0, 0, 0);
+        has_from = true;
+    }
+
+    if (to_s && to_s[0]) {
+        if (!parse_ymd_to_time(to_s, &to_t)) {
+            ServiceError e = service_error_validation("invalid 'to' date (expected YYYY-MM-DD)");
+            return http_send_service_error(conn, &e);
+        }
+        has_to = true;
+    } else {
+        has_to = true;
+    }
+
+    StatsFilterOpts filters;
+    memset(&filters, 0, sizeof filters);
+
+    if (account_s && account_s[0]) {
+        int64_t aid = strtoll(account_s, NULL, 10);
+        UserWithAccounts dto;
+        if (!user_service_get_user_with_accounts(state->user_svc, claims.sub, &dto, &serr)) {
+            return http_send_service_error(conn, &serr);
+        }
+        bool owned = false;
+        for (size_t i = 0; i < dto.account_count; ++i) {
+            if (account_id(dto.accounts[i]).value == aid) { owned = true; break; }
+        }
+        if (!owned) {
+            for (size_t i = 0; i < dto.account_count; ++i) account_free(dto.accounts[i]);
+            free(dto.accounts);
+            user_free(dto.user);
+            ServiceError e = service_error_not_found("account");
+            return http_send_service_error(conn, &e);
+        }
+        for (size_t i = 0; i < dto.account_count; ++i) account_free(dto.accounts[i]);
+        free(dto.accounts);
+        user_free(dto.user);
+
+        filters.has_scope_account = true;
+        filters.scope_account_id = aid;
+    }
+
+    if (type_s && type_s[0] && strcmp(type_s, "All") != 0) {
+        TransactionType tt;
+        DomainError derr;
+        if (!transaction_type_from_str(type_s, &tt, &derr)) {
+            ServiceError e = service_error_validation("invalid transaction_type");
+            return http_send_service_error(conn, &e);
+        }
+        filters.has_tx_type = true;
+        filters.tx_type = tt;
+    }
+
+    UserTransactionStatistics stats;
+    int64_t tx_count = 0;
+    PaymentCategoryTotal *payment_cats = NULL;
+    size_t payment_cat_count = 0;
+
+    if (!transaction_service_compute_user_statistics_extended(
+            state->tx_svc, claims.sub, per_account_limit,
+            has_from, from_t, has_to, to_t,
+            &filters, &stats, &tx_count, &payment_cats, &payment_cat_count, &serr)) {
+        return http_send_service_error(conn, &serr);
+    }
+
+    UserWithAccounts dto;
+    if (!user_service_get_user_with_accounts(state->user_svc, claims.sub, &dto, &serr)) {
+        user_transaction_statistics_free(&stats);
+        free(payment_cats);
+        return http_send_service_error(conn, &serr);
+    }
+
+    json_t *per_type = json_array();
+    for (size_t t = 0; t < TX_SERVICE_TYPE_COUNT; ++t) {
+        if (stats.per_type.present[t] && stats.per_type.totals[t] > 0) {
+            json_t *o = json_object();
+            json_object_set_new(o, "transaction_type", json_string(transaction_type_as_str((TransactionType)t)));
+            json_object_set_new(o, "total_cents", json_integer((json_int_t)stats.per_type.totals[t]));
+            json_array_append_new(per_type, o);
+        }
+    }
+
+    json_t *daily_net = json_array();
+    json_t *daily = json_array();
+    int64_t cumulative = 0;
+    for (size_t i = 0; i < stats.per_day_count; ++i) {
+        int32_t key = stats.per_day[i].date_key;
+        int y = key / 10000;
+        int m = (key / 100) % 100;
+        int d = key % 100;
+        char date_str[11];
+        snprintf(date_str, sizeof date_str, "%04d-%02d-%02d", y, m, d);
+
+        int64_t value = stats.per_day[i].total;
+        json_t *net_o = json_object();
+        json_object_set_new(net_o, "date", json_string(date_str));
+        json_object_set_new(net_o, "net_cents", json_integer((json_int_t)value));
+        json_array_append_new(daily_net, net_o);
+
+        int64_t spending = value < 0 ? -value : 0;
+        cumulative += spending;
+        json_t *o = json_object();
+        json_object_set_new(o, "date", json_string(date_str));
+        json_object_set_new(o, "spending_cents", json_integer((json_int_t)spending));
+        json_object_set_new(o, "cumulative_spending_cents", json_integer((json_int_t)cumulative));
+        json_array_append_new(daily, o);
+    }
+
+    json_t *payment_arr = json_array();
+    for (size_t i = 0; i < payment_cat_count; ++i) {
+        json_t *o = json_object();
+        json_object_set_new(o, "category", json_string(payment_cats[i].category));
+        json_object_set_new(o, "total_cents", json_integer((json_int_t)payment_cats[i].total_cents));
+        json_array_append_new(payment_arr, o);
+    }
+
+    json_t *balances = json_array();
+    for (size_t i = 0; i < dto.account_count; ++i) {
+        Account *a = dto.accounts[i];
+        json_t *o = json_object();
+        json_object_set_new(o, "account_id", json_integer((json_int_t)account_id(a).value));
+        json_object_set_new(o, "account_type", json_string(account_type_as_str(account_type_get(a))));
+        json_object_set_new(o, "currency", json_string(currency_as_str(account_currency(a))));
+        json_object_set_new(o, "balance_cents", json_integer((json_int_t)account_balance_cents(a)));
+        json_array_append_new(balances, o);
+    }
+
+    for (size_t i = 0; i < dto.account_count; ++i) account_free(dto.accounts[i]);
+    free(dto.accounts);
+    user_free(dto.user);
+
+    json_t *root = json_object();
+    json_object_set_new(root, "total_incoming_cents", json_integer((json_int_t)stats.total_incoming_cents));
+    json_object_set_new(root, "total_outgoing_cents", json_integer((json_int_t)stats.total_outgoing_cents));
+    json_object_set_new(root, "net_flow_cents",
+        json_integer((json_int_t)(stats.total_incoming_cents - stats.total_outgoing_cents)));
+    json_object_set_new(root, "total_volume_cents", json_integer((json_int_t)stats.total_volume_cents));
+    json_object_set_new(root, "transaction_count", json_integer((json_int_t)tx_count));
+    json_object_set_new(root, "per_type_totals", per_type);
+    json_object_set_new(root, "daily_net", daily_net);
+    json_object_set_new(root, "daily_cumulative_spending", daily);
+    json_object_set_new(root, "payment_category_totals", payment_arr);
+    json_object_set_new(root, "account_balances", balances);
+
+    user_transaction_statistics_free(&stats);
+    free(payment_cats);
+
+    char *s = json_dumps(root, JSON_COMPACT);
+    json_decref(root);
+
+    enum MHD_Result ret;
+    if (s) { ret = http_send_json(conn, MHD_HTTP_OK, s); free(s); }
+    else   { ServiceError e = service_error_internal("json serialization failed");
+             ret = http_send_service_error(conn, &e); }
+    return ret;
+}
+
 static enum MHD_Result handle_monthly_summary(AppState *state, struct MHD_Connection *conn) {
     AuthClaims claims;
     ServiceError serr;
@@ -323,12 +526,9 @@ static enum MHD_Result handle_monthly_summary(AppState *state, struct MHD_Connec
     }
 
     const char *limit_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "per_account_limit");
-    int64_t per_account_limit = limit_s ? (int64_t)strtoll(limit_s, NULL, 10) : 500; /* Rust unwrap_or(500) */
+    int64_t per_account_limit = limit_s ? (int64_t)strtoll(limit_s, NULL, 10) : 500;
 
-    /* Current-month "shaping" lives in this layer on purpose (see file header).
-     * We compute the [start, end] bounds of the current calendar month (UTC) and
-     * pass them to the service so EVERY aggregate — totals, per-type and the
-     * daily series — reflects only the current month, exactly like the Rust route. */
+    // 1. Compute current UTC month [start, end] and pass to service.
     time_t now = time(NULL);
     struct tm now_tm;
 #ifdef _WIN32
@@ -425,6 +625,7 @@ enum MHD_Result http_transactions_dispatch(
     if (strcmp(method, MHD_HTTP_METHOD_GET) == 0) {
         if      (subpath && strcmp(subpath, "/recent")          == 0) return handle_recent(state, conn);
         else if (subpath && strcmp(subpath, "/statement")       == 0) return handle_statement(state, conn);
+        else if (subpath && strcmp(subpath, "/summary") == 0) return handle_transaction_summary(state, conn);
         else if (subpath && strcmp(subpath, "/summary/monthly") == 0) return handle_monthly_summary(state, conn);
         return http_send_not_found(conn);
     }

@@ -47,13 +47,11 @@ pub struct ListAffiliatesParams {
     pub page_size: Option<u32>,
     pub search: Option<String>,
     pub currency: Option<String>,
+    pub for_send_currency: Option<String>,
     pub sort: Option<String>, // "asc" | "desc"
 }
 
-/// Repository abstraction for affiliates
-///
-/// Defining this as a trait lets you unit-test `AccountService` with
-/// in-memory fakes instead of hitting Postgres
+// Repository port for affiliates
 #[async_trait]
 pub trait AffiliateRepository: Send + Sync {
     async fn get(&self, owner_used_id: UserId, recipient_sub_account_id: AccountId) -> Result<Affiliate, RepoError>;
@@ -64,10 +62,7 @@ pub trait AffiliateRepository: Send + Sync {
     async fn exists(&self, owner_user_id: UserId, recipient_sub_account_id: AccountId) -> Result<bool, RepoError>;
 }
 
-/// Thin adapter: your concrete SQLx repo implements the trait
-///
-/// This mirrors the "port/adapter" pattern and keeps the service layer
-/// decoupled from SQLx's exact API
+// SQLx adapter implementing AffiliateRepository
 #[async_trait]
 impl AffiliateRepository for AffiliateRepo {
     async fn get(&self, owner_used_id: UserId, recipient_sub_account_id: AccountId) -> Result<Affiliate, RepoError> {
@@ -117,14 +112,9 @@ where
         Self { affiliate_repo, account_repo, user_repo }
     }
 
-    /// Create a new affiliate link.
-    ///
-    /// Business rules:
-    /// - referenced sub-account must exist,
-    /// - prevent duplicates using `exists`
     pub async fn create_affiliate(&self, owner_user_id: UserId, recipient_sub_account_id: AccountId, nickname: String, )
         -> ServiceResult<()> {
-        // Ensure the recipient account exists
+        // 1. Ensure recipient account exists
         let _ = self
             .account_repo
             .get_by_id(recipient_sub_account_id)
@@ -136,7 +126,7 @@ where
                 other => ServiceError::from(other),
             })?;
 
-        // Check if the affiliate already exists
+        // 2. Reject duplicate affiliate
         if self
             .affiliate_repo
             .exists(owner_user_id, recipient_sub_account_id)
@@ -148,7 +138,7 @@ where
             });
         }
 
-        // Create and persist the affiliate
+        // 3. Create and persist affiliate
         let affiliate = Affiliate::new(owner_user_id, recipient_sub_account_id, nickname)?;
         self.affiliate_repo.insert(&affiliate).await?;
         Ok(())
@@ -160,6 +150,46 @@ where
         Ok(list)
     }
 
+    pub async fn validate_send_target(
+        &self,
+        owner_user_id: UserId,
+        from_account_id: AccountId,
+        recipient_account_id: AccountId,
+    ) -> ServiceResult<()> {
+        // 1. Load sender and recipient accounts
+        let from_acc = self.account_repo.get_by_id(from_account_id).await?;
+        let to_acc = self.account_repo.get_by_id(recipient_account_id).await?;
+
+        // 2. Enforce Regular account + matching currency
+        if to_acc.account_type() != crate::domain::value::account_type::AccountType::Regular {
+            return Err(ServiceError::Validation(
+                "recipient must be a Regular account".into(),
+            ));
+        }
+
+        if from_acc.currency() != to_acc.currency() {
+            return Err(ServiceError::Validation(format!(
+                "This affiliate does not have a Regular {} account.",
+                from_acc.currency().as_str()
+            )));
+        }
+
+        // 3. Confirm recipient user is a saved affiliate
+        let affiliates = self.affiliate_repo.list_for_owner(owner_user_id).await?;
+        let recipient_user_id = to_acc.user_id();
+
+        for a in affiliates {
+            let saved = self.account_repo.get_by_id(a.recipient_sub_account_id()).await?;
+            if saved.user_id() == recipient_user_id {
+                return Ok(());
+            }
+        }
+
+        Err(ServiceError::Validation(
+            "recipient is not one of your affiliates".into(),
+        ))
+    }
+
     pub async fn rename_affiliate(
         &self,
         owner_user_id: UserId,
@@ -168,7 +198,11 @@ where
     ) -> ServiceResult<()> {
         self.affiliate_repo
             .update_nickname(owner_user_id, recipient_sub_account_id, &nickname)
-            .await?;
+            .await
+            .map_err(|e| match e {
+                RepoError::NotFound(entity) => ServiceError::not_found(entity),
+                e => ServiceError::Repo(e),
+            })?;
         Ok(())
     }
 
@@ -179,7 +213,11 @@ where
     ) -> ServiceResult<()> {
         self.affiliate_repo
             .delete(owner_user_id, recipient_sub_account_id)
-            .await?;
+            .await
+            .map_err(|e| match e {
+                RepoError::NotFound(entity) => ServiceError::not_found(entity),
+                e => ServiceError::Repo(e),
+            })?;
         Ok(())
     }
 
@@ -205,22 +243,53 @@ where
         owner_user_id: UserId,
         params: ListAffiliatesParams,
     ) -> ServiceResult<PaginatedAffiliatesView> {
+        // 1. Load affiliates and build view rows
         let affiliates = self.affiliate_repo.list_for_owner(owner_user_id).await?;
 
         let mut items = Vec::with_capacity(affiliates.len());
+        let mut seen_nicknames: HashSet<String> = HashSet::new();
+
         for a in affiliates {
-            let account = self.account_repo.get_by_id(a.recipient_sub_account_id()).await?;
-            let user = self.user_repo.get_by_id(account.user_id()).await?;
+            let saved_account = self.account_repo.get_by_id(a.recipient_sub_account_id()).await?;
+            let user = self.user_repo.get_by_id(saved_account.user_id()).await?;
             let full_name = format!("{} {}", user.first_name(), user.last_name());
+
+            let (recipient_sub_account_id, currency) = if let Some(curr_str) = params.for_send_currency.as_ref() {
+                use core::str::FromStr;
+                let up = curr_str.to_uppercase();
+                let _curr = Currency::from_str(&up)
+                    .map_err(|_| ServiceError::Validation("invalid currency".to_string()))?;
+
+                let nick_key = a.nickname().to_lowercase();
+                if seen_nicknames.contains(&nick_key) {
+                    continue;
+                }
+
+                let target_accounts = self.account_repo.list_for_user(saved_account.user_id()).await?;
+                let target = target_accounts.into_iter().find(|acc| {
+                    acc.account_type() == crate::domain::value::account_type::AccountType::Regular
+                        && acc.currency().as_str().eq_ignore_ascii_case(&up)
+                });
+
+                let Some(target) = target else { continue };
+                seen_nicknames.insert(nick_key);
+                (target.id().unwrap().0, up)
+            } else {
+                (
+                    a.recipient_sub_account_id().0,
+                    saved_account.currency().as_str().to_string(),
+                )
+            };
+
             items.push(AffiliateView {
-                recipient_sub_account_id: a.recipient_sub_account_id().0,
+                recipient_sub_account_id,
                 nickname: a.nickname().to_string(),
                 recipient_full_name: full_name,
-                currency: account.currency().as_str().to_string(),
+                currency,
             });
         }
 
-        // Search (min 2 chars)
+        // 2. Apply search filter (min 2 chars)
         let mut filtered = items;
         if let Some(s) = params.search.as_ref() {
             let s_trim = s.trim().to_lowercase();
@@ -236,7 +305,8 @@ where
             }
         }
 
-        // Filter by currency (validate symbol)
+        // 3. Filter by currency (skipped when for_send_currency resolved targets)
+        if params.for_send_currency.is_none() {
         if let Some(curr_str) = params.currency.as_ref() {
             use core::str::FromStr;
             let _curr = Currency::from_str(curr_str)
@@ -247,20 +317,19 @@ where
                 .filter(|item| item.currency.eq_ignore_ascii_case(&up))
                 .collect();
         }
+        }
 
-        // Sort
+        // 4. Sort and paginate
         let sort_dir = params.sort.as_deref().unwrap_or("asc");
         filtered.sort_by(|a, b| {
             let ord = a.nickname.to_lowercase().cmp(&b.nickname.to_lowercase());
             if sort_dir == "desc" { ord.reverse() } else { ord }
         });
 
-        // Pagination
         let page = params.page.unwrap_or(1).max(1);
         let page_size = params.page_size.unwrap_or(20).clamp(1, 100);
         let total = filtered.len() as u64;
         let start = ((page - 1) * page_size) as usize;
-        let end = (start + page_size as usize).min(filtered.len());
         let page_items = if start >= filtered.len() {
             Vec::new()
         } else {
@@ -286,16 +355,20 @@ where
 
     #[tracing::instrument(skip(self), fields(owner_user_id = %owner_user_id.0, tag = %tag))]
     pub async fn resolve_target_by_tag(&self, owner_user_id: UserId, tag: String) -> ServiceResult<ResolvedAffiliateTargetView> {
+        // 1. Resolve user by tag
         let tag = tag.trim().to_string();
         if tag.is_empty() {
             return Err(ServiceError::Validation("identifier cannot be empty".into()));
         }
         let target_user = self.user_repo.get_by_tag(&tag).await.map_err(|e| match e {
-            RepoError::NotFound(_) => ServiceError::Validation("user not found".into()),
+            RepoError::NotFound(_) => ServiceError::Validation(format!(
+                "No Gentlix user was found with tag \"{tag}\". Check the spelling and try again."
+            )),
             other => ServiceError::from(other),
         })?;
         let target_user_id = target_user.id().ok_or_else(|| ServiceError::Validation("target user has no id in memory".to_string()))?;
 
+        // 2. Match Regular accounts in currencies the owner can send
         let owner_accounts = self.account_repo.list_for_user(owner_user_id).await?;
         let target_accounts = self.account_repo.list_for_user(target_user_id).await?;
 
@@ -303,6 +376,9 @@ where
 
         let mut options = Vec::new();
         for acc in target_accounts {
+            if acc.account_type() != crate::domain::value::account_type::AccountType::Regular {
+                continue;
+            }
             let curr = acc.currency();
             if owner_currencies.contains(&curr) {
                 options.push(ResolveAffiliateCurrencyOptionView {
@@ -312,7 +388,9 @@ where
             }
         }
         if options.is_empty() {
-            return Err(ServiceError::Validation("no compatible currencies between owner and target user".into()));
+            return Err(ServiceError::Validation(
+                "This user has no Regular account in a currency you can send to. Transfers can only be made to Regular accounts.".into(),
+            ));
         }
         let full_name = format!("{} {}", target_user.first_name(), target_user.last_name());
         Ok(ResolvedAffiliateTargetView { recipient_user_id: target_user_id.0, recipient_full_name: full_name, currencies: options })

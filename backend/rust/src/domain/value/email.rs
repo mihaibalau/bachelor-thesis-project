@@ -1,5 +1,4 @@
-//! Email value object.
-//! Keeps validation in one place and guarantees: if you have an `Email`, it's valid.
+// Email value object — validation lives here; an `Email` is always well-formed.
 
 use core::fmt;
 use core::str::FromStr;
@@ -29,11 +28,13 @@ impl FromStr for Email {
     type Err = DomainError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // 1. Reject empty input
         let s = s.trim();
         if s.is_empty() {
             return Err(DomainError::validation("Email must not be empty"));
         }
 
+        // 2. Split on exactly one '@' and validate local/domain parts
         let parts: Vec<&str> = s.split('@').collect();
         if parts.len() != 2 {
             return Err(DomainError::validation("Email must contain exactly one '@'"));

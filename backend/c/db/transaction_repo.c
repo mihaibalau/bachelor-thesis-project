@@ -10,7 +10,7 @@
 #include "../domain/include/error.h"
 
 struct TransactionRepo {
-    Db *db; /* non-owning */
+    Db *db;
 };
 
 TransactionRepo *transaction_repo_new(Db *db) {
@@ -89,7 +89,7 @@ static bool transaction_repo_row_to_domain(
     return true;
 }
 
-/* Public API */
+// Public API
 
 bool transaction_repo_get_by_id(
     TransactionRepo *repo,
@@ -97,6 +97,7 @@ bool transaction_repo_get_by_id(
     Transaction **out,
     RepoError *err
 ) {
+    // 1. Query by id; map row to domain or NotFound.
     if (!repo || !out) {
         if (err) *err = repo_error_db("TransactionRepo::get_by_id: invalid arguments");
         return false;
@@ -139,6 +140,7 @@ bool transaction_repo_insert(
     TransactionId *out_id,
     RepoError *err
 ) {
+    // 1. INSERT row; return generated id.
     if (!repo || !tx || !out_id) {
         if (err) *err = repo_error_db("TransactionRepo::insert: invalid arguments");
         return false;

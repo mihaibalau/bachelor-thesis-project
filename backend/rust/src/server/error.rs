@@ -14,8 +14,7 @@ struct ErrorBody {
     message: String,
 }
 
-/// Small wrapper so we can implement `IntoResponse`
-/// without hitting Rust's orphan rule.
+// Wrapper for `IntoResponse` without orphan-rule issues.
 pub struct ApiError(pub ServiceError);
 
 impl From<ServiceError> for ApiError {
@@ -26,6 +25,8 @@ impl From<ServiceError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // 1. Map ServiceError to HTTP status + body fields
+        let is_forbidden = matches!(self.0, ServiceError::Forbidden);
         let (status, code, message) = match self.0 {
             ServiceError::NotFound {entity} => (
                 StatusCode::NOT_FOUND,
@@ -69,9 +70,16 @@ impl IntoResponse for ApiError {
             ),
         };
 
+        // 2. Log client/server errors
+        if status.is_server_error() {
+            tracing::error!(%code, %message, "api server error");
+        } else if status.is_client_error() && !is_forbidden {
+            tracing::warn!(%code, %message, "api client error");
+        }
+
+        // 3. JSON error response
         (status, Json(ErrorBody { status: status.as_u16(), code, message })).into_response()
     }
 }
 
-/// Convenience alias for handler return type.
 pub type ApiResult<T> = Result<T, ApiError>;

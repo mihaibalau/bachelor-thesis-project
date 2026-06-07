@@ -10,10 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/*
- * Affiliates routes. Parsing/serialization only; the views, search, sorting,
- * pagination and tag resolution all live in AffiliateService.
- */
+// Affiliates routes: parse/serialize only; views/search in AffiliateService.
 
 static enum MHD_Result auth_401(struct MHD_Connection *conn) {
     return http_send_json(conn, MHD_HTTP_UNAUTHORIZED,
@@ -21,8 +18,8 @@ static enum MHD_Result auth_401(struct MHD_Connection *conn) {
 }
 
 static enum MHD_Result invalid_id(struct MHD_Connection *conn) {
-    return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-        "{\"status\":422,\"code\":\"validation_error\",\"message\":\"invalid sub_account_id\"}");
+    return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+        "{\"status\":400,\"code\":\"validation_error\",\"message\":\"invalid sub_account_id\"}");
 }
 
 // Parse "/{id}" → returns true and sets *out on a valid positive integer.
@@ -58,9 +55,10 @@ static enum MHD_Result handle_list(AppState *state, struct MHD_Connection *conn)
     memset(&params, 0, sizeof params);
     if (page_s)      { params.has_page = true;      params.page = (uint32_t)strtoul(page_s, NULL, 10); }
     if (page_size_s) { params.has_page_size = true; params.page_size = (uint32_t)strtoul(page_size_s, NULL, 10); }
-    params.search_opt   = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "search");
-    params.currency_opt = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "currency");
-    params.sort_opt     = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "sort");
+    params.search_opt            = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "search");
+    params.currency_opt          = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "currency");
+    params.for_send_currency_opt = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "for_send_currency");
+    params.sort_opt              = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "sort");
 
     PaginatedAffiliatesView view;
     if (!affiliate_service_list_affiliates_view(
@@ -122,8 +120,8 @@ static enum MHD_Result handle_create(AppState *state, struct MHD_Connection *con
     json_t *sub_j       = json_object_get(root, "recipient_sub_account_id");
     const char *nickname = json_string_value(json_object_get(root, "nickname"));
     if (!json_is_integer(sub_j) || !nickname) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"recipient_sub_account_id and nickname are required\"}");
     }
     AccountId sub = { (int64_t)json_integer_value(sub_j) };
@@ -141,8 +139,8 @@ static enum MHD_Result handle_rename(AppState *state, struct MHD_Connection *con
                                      AuthClaims claims, AccountId sub, json_t *root) {
     const char *nickname = json_string_value(json_object_get(root, "nickname"));
     if (!nickname) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\",\"message\":\"nickname is required\"}");
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\",\"message\":\"nickname is required\"}");
     }
     ServiceError serr;
     if (!affiliate_service_rename_affiliate(
@@ -159,8 +157,8 @@ static enum MHD_Result handle_resolve_target(AppState *state, struct MHD_Connect
     const char *identifier_type = json_string_value(json_object_get(root, "identifier_type"));
     const char *identifier      = json_string_value(json_object_get(root, "identifier"));
     if (!identifier_type || !identifier) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"identifier_type and identifier are required\"}");
     }
 
@@ -169,8 +167,8 @@ static enum MHD_Result handle_resolve_target(AppState *state, struct MHD_Connect
         return http_send_service_error(conn, &e);
     }
     if (strcmp(identifier_type, "tag") != 0) {
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"invalid identifier_type\"}");
     }
 

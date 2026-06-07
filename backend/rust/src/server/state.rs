@@ -15,6 +15,7 @@ use crate::{
     },
 };
 
+// Service type aliases wired into AppState
 pub type UserSvc = UserService<UserRepo, AccountRepo>;
 pub type AccountSvc = AccountService<AccountRepo>;
 pub type TxSvc = TransactionService<TransactionRepo, AccountRepo>;

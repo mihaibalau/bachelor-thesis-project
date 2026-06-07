@@ -28,9 +28,11 @@ import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { useNavigate } from 'react-router-dom';
 import { useColorMode } from '../theme/useColorMode';
+import { AUTH_PRIMARY_BUTTON_SX } from '../../shared/buttonStyles';
 import gentlixLogo from '../../assets/logo.png';
+import { registerUser } from './api';
+import { ApiError } from '../../shared/apiError';
 
-// Zod schema matching backend payload
 const RegisterSchema = z.object({
     tag: z
         .string()
@@ -82,36 +84,21 @@ export function RegisterPage() {
     });
 
     const onSubmit = async (data: RegisterFormValues) => {
+        // 1. Clear prior feedback, post registration payload.
         setServerError(null);
         setServerSuccess(null);
-
         try {
-            const response = await fetch('http://localhost:6767/api/users', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(data),
-            });
-
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(text || 'Registration failed.');
-            }
-
-            setServerSuccess(
-                'Account created successfully. You can now sign in.',
-            );
-            // small delay so the user sees the message, then go to login
-            setTimeout(() => {
-                navigate('/login');
-            }, 900);
+            await registerUser(data);
+            // 2. Show success and redirect to login.
+            setServerSuccess('Account created successfully. You can now sign in.');
+            setTimeout(() => navigate('/login'), 900);
         } catch (err) {
-            console.error(err);
             setServerError(
-                err instanceof Error
+                err instanceof ApiError
                     ? err.message
-                    : 'Registration failed. Please check your details and try again.',
+                    : err instanceof Error
+                      ? err.message
+                      : 'Registration failed. Please check your details and try again.',
             );
         }
     };
@@ -142,7 +129,6 @@ export function RegisterPage() {
                 transition: 'background 200ms ease',
             }}
         >
-            {/* Toggle sus dreapta */}
             <IconButton
                 onClick={toggleMode}
                 color="inherit"
@@ -190,7 +176,6 @@ export function RegisterPage() {
                         alignItems: 'stretch',
                     }}
                 >
-                    {/* Left side – brand + copy */}
                     <Box
                         sx={{
                             display: 'flex',
@@ -275,7 +260,6 @@ export function RegisterPage() {
                         </Box>
                     </Box>
 
-                    {/* Right side – register card */}
                     <Paper
                         sx={{
                             p: { xs: 3, md: 4 },
@@ -477,7 +461,7 @@ export function RegisterPage() {
                                         <ArrowForwardRoundedIcon />
                                     ) : undefined
                                 }
-                                sx={{ mt: 1 }}
+                                sx={{ mt: 1, ...AUTH_PRIMARY_BUTTON_SX }}
                             >
                                 {isSubmitting
                                     ? 'Creating account…'

@@ -12,10 +12,7 @@ use crate::domain::ids::{UserId};
 use crate::domain::user::User;
 use crate::domain::value::email::Email;
 
-/// Repository abstraction for user persistence
-///
-/// Defining this as a trait lets you unit-test `UserService` with
-/// in-memory fakes instead of hitting Postgres
+// Repository port for user persistence (enables in-memory fakes in tests)
 #[async_trait]
 pub trait UserRepository: Send + Sync {
     async fn get_by_id(&self, user_id: UserId) -> Result<User, RepoError>;
@@ -26,10 +23,7 @@ pub trait UserRepository: Send + Sync {
     async fn delete(&self, user_id: UserId) -> Result<(), RepoError>;
 }
 
-/// Thin adapter: your concrete SQLx repo implements the trait
-///
-/// This mirrors the "port/adapter" pattern and keeps the service layer
-/// decoupled from SQLx's exact API
+// SQLx adapter implementing UserRepository
 #[async_trait]
 impl UserRepository for UserRepo {
     async fn get_by_id(&self, user_id: UserId) -> Result<User, RepoError> {
@@ -57,12 +51,8 @@ impl UserRepository for UserRepo {
     }
 }
 
-// Repos are thread-safe and shareable via Arc, as suggested in both Async Rust
-// (custom executors sharing state) and Rust Atomics & Locks (Arc and channels).
-
 use tokio::{task, try_join};
 use tracing::{debug, info, warn};
-use crate::db::account_repo::AccountRepo;
 use crate::domain::value::account_type::AccountType;
 use crate::domain::value::currency::Currency;
 use crate::domain::value::iban::IBAN;
@@ -70,7 +60,6 @@ pub(crate) use crate::service::account::AccountRepository;
 use crate::service::auth::{Claims, LoginResult, LoginUserCommand};
 use crate::service::errors::{ServiceError, ServiceResult};
 
-/// Input DTO for registering a user at the service layer
 #[derive(Debug, Clone)]
 pub struct RegisterUserCommand {
     pub tag: String,
@@ -79,21 +68,15 @@ pub struct RegisterUserCommand {
     pub last_name: String,
     pub phone: Option<String>,
     pub birth_date: Option<chrono::NaiveDate>,
-    /// Expect a pre-hashed password here (argon2), produced in the API layer
     pub password: String,
 }
 
-/// Composite read model: a user plus all their accounts
-///
-/// This is an example of how the service layer can compose multiple
-/// aggregates into one response without leaking SQLx details
 #[derive(Debug, Clone)]
 pub struct UserWithAccounts {
     pub user: User,
     pub accounts: Vec<Account>,
 }
 
-/// Main application service for user-related use cases
 #[derive(Clone)]
 pub struct UserService<U, A>
 where
@@ -123,8 +106,11 @@ where
     ) -> ServiceResult<LoginResult> {
         info!(email = %cmd.email, "login attempt");
 
-        // 1. Find the user by email
-        let email: Email = cmd.email.parse().map_err(ServiceError::Domain)?;
+        // 1. Find the user by email (treat malformed email as invalid credentials, matching the C backend)
+        let email: Email = cmd
+            .email
+            .parse()
+            .map_err(|_| ServiceError::Validation("invalid credentials".into()))?;
         let user = self.user_repo.get_by_email(&email).await.map_err(|e| match e {
             RepoError::NotFound(_) => ServiceError::Validation("invalid credentials".into()),
             other => ServiceError::from(other),
@@ -166,12 +152,6 @@ where
         Ok(LoginResult { token, user_id })
     }
 
-    /// Register a new user
-    ///
-    /// - Validates email format and domain invariants
-    /// - Enforces uniqueness of `email` and `tag`
-    /// - Delegates hashing to the caller (API), but *enforces* that we
-    ///   only ever see a hash, never a raw password
     pub async fn register_user(&self, cmd: RegisterUserCommand) -> ServiceResult<UserId> {
 
         info!(email = %cmd.email, tag = %cmd.tag, "registering new user");
@@ -183,9 +163,7 @@ where
             .parse()
             .map_err(ServiceError::Domain)?; // DomainError -> ServiceError
 
-        // 2. Check uniqueness for email and tag at application level
-        // Pattern: treat RepoError::NotFound as "free slot", anything else
-        // is either a conflict or infrastructure failure
+        // 2. Check uniqueness for email and tag
         match self.user_repo.get_by_email(&email).await {
             Ok(_) => {
                 return Err(ServiceError::conflict(
@@ -223,11 +201,7 @@ where
             .map_err(AnyError::new)?  // JoinError -> AnyError -> ServiceError::Unexpected (via From)
             ?;
 
-        // 4. Construct the domain `User`
-        //
-        // Following the "ownership meets invariants" idea (Zero To Production,
-        // section 6.5), all heavy validations should happen as we *build*
-        // the type, not afterward
+        // 4. Build domain User (validations run in constructor)
         let user = User::create(
             cmd.tag,
             email,
@@ -238,12 +212,12 @@ where
             password_hash,
         )?;
 
-        // 5. Persist the user through the repository
+        // 5. Persist user
         let user_id = self.user_repo.insert(&user).await?;
 
         info!(user_id = user_id.0, "user registered successfully");
 
-        // 6. Create a default account with the new user account + IBAN for it
+        // 6. Create and persist default Regular RON account
         let mut default_account_iban = IBAN::generate()?;
         while self.account_repo.exists_by_iban(default_account_iban.as_str()).await? {
             default_account_iban = IBAN::generate()?;
@@ -257,7 +231,6 @@ where
             default_account_iban,
         )?;
 
-        // 7. Persist the default account through the repository
         self.account_repo.insert(&default_account).await?;
 
         info!(user_id = user_id.0, "default user account created successfully");
@@ -265,16 +238,11 @@ where
         Ok(user_id)
     }
 
-    /// Fetch a user and all their accounts **in parallel**
-    ///
-    /// This uses `tokio::try_join!` to issue two independent SQL queries
-    /// concurrently, inspired by the structured concurrency patterns in
-    /// *Async Rust* and the "instrumenting futures" patterns in
-    /// Zero To Production, section 4.5.
     pub async fn get_user_with_accounts(
         &self,
         user_id: UserId,
     ) -> ServiceResult<UserWithAccounts> {
+        // 1. Fetch user and accounts in parallel
         let user_fut = self.user_repo.get_by_id(user_id);
         let accounts_fut = self.account_repo.list_for_user(user_id);
 
@@ -284,9 +252,7 @@ where
         Ok(UserWithAccounts { user, accounts })
     }
 
-    /// Delete a user and all personal data
     pub async fn delete_user(&self, user_id: UserId) -> ServiceResult<()> {
-        // check there are no non-closed accounts, etc.
         self.user_repo.delete(user_id).await?;
         Ok(())
     }

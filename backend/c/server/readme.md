@@ -26,7 +26,8 @@ Both backends (Rust and C) expose the same routes, request bodies, response shap
                 │      http_router.c           │
                 │  prefix dispatch to:         │
                 │  users / accounts /          │
-                │  affiliates / transactions   │
+                │  affiliates / transactions / │
+                │  dashboard                   │
                 └──────┬───────────┬───────────┘
                        │           │
        ┌───────────────▼──┐   ┌────▼────────────────────────────┐
@@ -59,7 +60,7 @@ The entry point of the HTTP layer — wraps libmicrohttpd daemon lifecycle.
 
 - `bool http_server_start(struct HttpServer *srv, AppState *state, unsigned short port);`
   - Purpose: Bind and start the MHD daemon.
-  - Params: `srv` – server struct to fill; `state` – passed as `cls` to every callback; `port` – TCP port (6767 in `main.c`).
+  - Params: `srv` – server struct to fill; `state` – passed as `cls` to every callback; `port` – TCP port (`PORT` env in `main.c`, default 6767).
   - Behaviour: Calls `MHD_start_daemon` with `http_request_handler`, `MHD_USE_SELECT_INTERNALLY`, listening on `0.0.0.0`.
   - Returns: `true` on success, `false` if daemon failed to start.
 
@@ -76,6 +77,7 @@ Top-level URL dispatch — mirrors axum `.nest("/api/…")`.
 - `enum MHD_Result http_request_handler(void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version, const char *upload_data, size_t *upload_data_size, void **con_cls);`
   - Purpose: Single MHD access handler for all routes.
   - Behaviour:
+    - Logs every non-`OPTIONS` request (`event=http_request method=… path=…`).
     - Uses `match_prefix` for path-boundary-safe matching (prevents `/api/accountsX` false positives).
     - Strips prefix and forwards **subpath** to the resource dispatcher.
     - Unmatched → `http_send_not_found`.
@@ -84,6 +86,7 @@ Top-level URL dispatch — mirrors axum `.nest("/api/…")`.
     - `/api/accounts` → `http_accounts_dispatch`
     - `/api/affiliates` → `http_affiliates_dispatch`
     - `/api/transactions` → `http_transactions_dispatch`
+    - `/api/dashboard` → `http_dashboard_dispatch`
 
 ---
 
@@ -151,7 +154,8 @@ Shared response and body-buffer helpers.
   - Purpose: Growable buffer; returns `false` on OOM.
 
 - `void add_cors_headers(struct MHD_Response *res);`
-  - Purpose: Permissive CORS (mirrors Rust `CorsLayer::permissive()`).
+  - Purpose: Add CORS headers to every response (mirrors the Rust `CorsLayer`).
+  - Behaviour: `Access-Control-Allow-Origin` = `CORS_ORIGIN` env (default `http://localhost:5173`); allows headers `Content-Type, Authorization`; allows methods `GET, POST, PUT, PATCH, DELETE, OPTIONS`; `Access-Control-Max-Age: 86400`.
 
 - `enum MHD_Result http_send_json(struct MHD_Connection *conn, int status, const char *json);`
   - Purpose: Respond with `Content-Type: application/json`.
@@ -537,6 +541,7 @@ Query params (all optional):
 | `page_size` | u32 | default 20, clamped [1, 100] |
 | `search` | str | substring on nickname or recipient name; **ignored if length < 2** |
 | `currency` | str | e.g. `RON`, `EUR` |
+| `for_send_currency` | str | keep only affiliates whose recipient account currency matches (used by the Send flow) |
 | `sort` | str | `"asc"` (default) or `"desc"` by nickname |
 
 Example: `GET /api/affiliates?page=1&page_size=10&search=jo&currency=RON&sort=asc`
@@ -745,6 +750,12 @@ Response `200 OK`:
 
 ---
 
+#### Transaction summary (filtered)
+
+- **GET** `/api/transactions/summary?from=YYYY-MM-DD&to=YYYY-MM-DD&account_id=&transaction_type=&per_account_limit=500`
+
+Filtered aggregates for the Statistics page (totals, per-type, daily net, cumulative spending, payment categories, balances). Implemented in `http_transactions.c` → `transaction_service_compute_user_statistics_extended`.
+
 #### User monthly summary
 
 - **GET** `/api/transactions/summary/monthly?per_account_limit=500`
@@ -782,6 +793,14 @@ Internal transfers between the user's own accounts are deduplicated and net to z
 
 ---
 
+#### Dashboard
+
+- **GET** `/api/dashboard`
+
+Aggregated home-screen data. Implemented in `http_dashboard.c`.
+
+---
+
 ## Request lifecycle
 
 ```
@@ -800,10 +819,14 @@ MHD may invoke the callback multiple times per request while uploading a body; `
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DB_CONN` | libpq connection string | local dev DSN in `main.c` |
-| `JWT_SECRET` | HMAC secret for JWT | dev default in `main.c` |
+| `DATABASE_URL` | libpq connection string | **required** (`DB_CONN` alias supported) |
+| `JWT_SECRET` | HMAC secret for JWT | **required** (max 255 bytes) |
+| `CORS_ORIGIN` | Allowed browser origin | `http://localhost:5173` |
+| `PORT` | HTTP listen port | `6767` |
 
-Server listens on port **6767** (hard-coded in `main.c`). Press ENTER to stop.
+`.env` is loaded from the current directory, then `../.env`, then next to the executable (`load_dotenv_*` in `main.c`); environment variables set by the container/host take precedence. Logging variables (`LOG_FORMAT`, `LOG_LEVEL`, `DEBUG_MODE`, `SERVICE_NAME`) are documented in [`backend/LOGGING.md`](../../LOGGING.md).
+
+Server binds `0.0.0.0:$PORT` (default 6767). When run interactively it prints `Press ENTER to stop...` and shuts down on input.
 
 ---
 

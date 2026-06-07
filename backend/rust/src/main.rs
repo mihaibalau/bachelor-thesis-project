@@ -1,8 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::Router;
-use tracing_subscriber::EnvFilter;
-
 mod db;
 mod domain;
 mod service;
@@ -27,14 +25,12 @@ use crate::{
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    // 1. Tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
-        .init();
+    // 1. Tracing (RUST_LOG, DEBUG_MODE, LOG_FORMAT=json for AWS CloudWatch)
+    server::logging::init_tracing()?;
 
     // 2. DB pool
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://mihai:admingentlix01@localhost:5432/gentlix_bank".to_string());
+        .expect("DATABASE_URL must be set — copy .env.example to .env");
 
     let db = Db::new(&database_url).await?;
 
@@ -75,8 +71,13 @@ async fn main() -> anyhow::Result<()> {
     let app: Router = create_router(state);
 
     // 6. Serve
-    let addr = SocketAddr::from(([0, 0, 0, 0], 6767));
-    tracing::info!("Listening on http://{}", addr);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(6767);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let service = std::env::var("SERVICE_NAME").unwrap_or_else(|_| "gentlix-rust".to_string());
+    tracing::info!(service = %service, %addr, "listening");
 
     axum::serve(
         tokio::net::TcpListener::bind(addr).await?,

@@ -1,4 +1,3 @@
-use tracing::debug;
 use crate::db::Db;
 use crate::db::errors::RepoError;
 use crate::domain::account::Account;
@@ -75,6 +74,7 @@ impl AccountRepo {
             .fetch_all(self.db.pool())
             .await?;
 
+        // Rehydrate each row into a domain Account
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(Account::try_from(row)?);
@@ -83,6 +83,7 @@ impl AccountRepo {
     }
 
     pub async fn insert(&self, account: &Account) -> Result<AccountId, RepoError> {
+        // 1. Only persist accounts without an assigned id
         if account.id().is_some() {
             return Err(RepoError::from(DomainError::validation(
                 "Cannot insert an Account that already has an id",
@@ -92,6 +93,7 @@ impl AccountRepo {
         let account_type = account.account_type();
         let currency = account.currency();
 
+        // 2. Insert and return generated id
         let rec = sqlx::query!(
             r#"
                 INSERT INTO accounts (user_id, account_type, currency, balance_cents, iban)
@@ -111,6 +113,7 @@ impl AccountRepo {
     }
 
     pub async fn update(&self, account: &Account) -> Result<(), RepoError> {
+        // 1. Require a persisted id before updating
         let id = account.id().ok_or_else(|| {
             RepoError::from(DomainError::validation(
                 "Cannot update an Account without an id",
@@ -120,6 +123,7 @@ impl AccountRepo {
         let account_type = account.account_type();
         let currency = account.currency();
 
+        // 2. Apply changes; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
                 UPDATE accounts
@@ -148,6 +152,7 @@ impl AccountRepo {
     }
 
     pub async fn delete(&self, account_id: AccountId) -> Result<(), RepoError> {
+        // 1. Delete by id; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
                 DELETE FROM accounts
@@ -199,6 +204,30 @@ impl AccountRepo {
         Ok(rec.exists)
     }
 
+    pub async fn exists_by_type_and_currency(
+        &self,
+        user_id: UserId,
+        account_type: AccountType,
+        currency: Currency,
+    ) -> Result<bool, RepoError> {
+        let rec = sqlx::query!(
+            r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM accounts
+                    WHERE account_type = $1 AND user_id = $2 AND currency = $3
+                ) as "exists!: bool"
+            "#,
+            account_type.as_str(),
+            user_id.0,
+            currency.as_str(),
+        )
+            .fetch_one(self.db.pool())
+            .await?;
+
+        Ok(rec.exists)
+    }
+
     pub async fn list_type_currency_pairs(
         &self,
         user_id: UserId,
@@ -214,6 +243,7 @@ impl AccountRepo {
             .fetch_all(self.db.pool())
             .await?;
 
+        // Parse stored strings back into domain enums
         let mut pairs = Vec::with_capacity(rows.len());
         for row in rows {
             let account_type: AccountType = row.account_type.parse()
@@ -230,6 +260,7 @@ impl TryFrom<AccountRow> for Account {
     type Error = DomainError;
 
     fn try_from(row: AccountRow) -> Result<Self, Self::Error> {
+        // 1. Parse enum/value-object columns, then rehydrate with DB id
         let id = AccountId(row.id);
         let user_id = UserId(row.user_id);
 

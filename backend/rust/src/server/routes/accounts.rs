@@ -7,7 +7,6 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use tracing::info;
 use crate::{
     domain::{
         ids::{AccountId, UserId},
@@ -27,16 +26,12 @@ use crate::{
     },
 };
 
-// ── Request DTOs ─────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct OpenAccountRequest {
     pub account_type: String,
     pub currency: String,
     pub initial_balance_cents: i64,
 }
-
-// ── Response DTOs ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct AccountResponse {
@@ -65,13 +60,10 @@ pub struct AccountAvailabilityResponse {
     pub types: Vec<AccountTypeAvailability>,
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
-
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let private = Router::new()
         .route("/", post(open_account))
-        // Register the static `/availability` path BEFORE the parameterized
-        // `/{id}` route so it is never captured (and fail-to-parse) by `{id}`.
+        // Static /availability before /{id} so it is not captured as an id
         .route("/availability", get(get_availability))
         .route("/{id}", get(get_account))
         .route_layer(middleware::from_fn_with_state(
@@ -82,19 +74,14 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new().merge(private)
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
 async fn open_account(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
     Json(body): Json<OpenAccountRequest>,
 ) -> ApiResult<Json<AccountResponse>> {
-    info!(method = "POST", path = "/api/accounts", "incoming request");
-
-    // Auth user is the owner
     let user_id = UserId::from(claims.sub);
 
-    // Delegate all parsing/validation to the service
+    // 1. Delegate to service
     let account_id = state
         .account_svc
         .open_account_raw(
@@ -106,7 +93,7 @@ async fn open_account(
         .await
         .map_err(ApiError::from)?;
 
-    // 6. Get the created account
+    // 2. Load created account for response
     let account = state
         .account_svc
         .get_account(account_id)
@@ -132,16 +119,16 @@ async fn get_account(
     Path(id): Path<i64>,
     Extension(claims): Extension<Claims>,
 ) -> ApiResult<Json<AccountResponse>> {
-    info!(method = "GET", path = "/api/accounts/{id}", id, "incoming request");
-
     let account_id = AccountId::from(id);
 
+    // 1. Delegate to service
     let account = state
         .account_svc
         .get_account(account_id)
         .await
         .map_err(ApiError::from)?;
 
+    // 2. Auth check — hide other users' accounts as not found
     if account.user_id().0 != claims.sub {
         return Err(ApiError(ServiceError::not_found("account")));
     }
@@ -164,17 +151,16 @@ async fn get_availability(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
 ) -> ApiResult<Json<AccountAvailabilityResponse>> {
-    info!(method = "GET", path = "/api/accounts/availability", "incoming request");
-
     let user_id = UserId::from(claims.sub);
 
+    // 1. Delegate to service
     let availability = state
         .account_svc
         .get_account_availability(user_id)
         .await
         .map_err(ApiError::from)?;
 
-
+    // 2. Map to response DTO
     let types = AccountType::all()
         .iter()
         .map(|&account_type| {

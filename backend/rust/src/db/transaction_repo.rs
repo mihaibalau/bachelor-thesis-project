@@ -51,6 +51,7 @@ impl TransactionRepo {
     }
 
     pub async fn insert(&self, tx: &Transaction) -> Result<TransactionId, RepoError> {
+        // 1. Only persist transactions without an assigned id
         if tx.id().is_some() {
             return Err(RepoError::from(DomainError::validation(
                 "Cannot insert a Transaction that already has an id",
@@ -60,6 +61,7 @@ impl TransactionRepo {
         let tx_type = tx.transaction_type_str();
         let recorded_on = tx.recorded_on();
 
+        // 2. Insert and return generated id
         let rec = sqlx::query!(
             r#"
             INSERT INTO transactions (
@@ -87,6 +89,7 @@ impl TransactionRepo {
     }
 
     pub async fn list_for_account(&self, account_id: AccountId, limit: i64, offset: i64, ) -> Result<Vec<Transaction>, RepoError> {
+        // 1. Fetch both incoming and outgoing legs, newest first
         let rows = sqlx::query_as!(
             TransactionRow,
             r#"
@@ -109,6 +112,7 @@ impl TransactionRepo {
             .fetch_all(self.db.pool())
             .await?;
 
+        // 2. Rehydrate each row into a domain Transaction
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(Transaction::try_from(row)?);
@@ -121,6 +125,7 @@ impl TryFrom<TransactionRow> for Transaction {
     type Error = DomainError;
 
     fn try_from(row: TransactionRow) -> Result<Self, Self::Error> {
+        // 1. Parse transaction type, then rehydrate with DB id
         let id = TransactionId(row.id);
 
         let from_account_id = AccountId(row.from_account_id);

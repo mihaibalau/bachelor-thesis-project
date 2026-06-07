@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Concrete representation, hidden. */
 struct Affiliate {
     UserId owner_user_id;
     AccountId recipient_sub_account_id;
@@ -48,8 +47,6 @@ static bool normalize_required(
     return true;
 }
 
-/* Public API */
-
 Affiliate *affiliate_new(
     UserId owner_user_id,
     AccountId recipient_sub_account_id,
@@ -62,6 +59,7 @@ Affiliate *affiliate_new(
         return NULL;
     }
 
+    // 1. Set ids and validate nickname.
     a->owner_user_id = owner_user_id;
     a->recipient_sub_account_id = recipient_sub_account_id;
 
@@ -73,8 +71,6 @@ Affiliate *affiliate_new(
 
     return a;
 }
-
-/* Getters */
 
 UserId affiliate_owner_user_id(const Affiliate *a) {
     assert(a);
@@ -90,8 +86,6 @@ const char *affiliate_nickname(const Affiliate *a) {
     assert(a);
     return a->nickname;
 }
-
-/* Destructor */
 
 void affiliate_free(Affiliate *a) {
     free(a);

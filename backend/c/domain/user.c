@@ -8,7 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Concrete representation, hidden. */
 struct User {
     bool has_id;
     UserId id;
@@ -104,6 +103,7 @@ static bool user_init(
     User *out,
     DomainError *err
 ) {
+    // 1. Normalize required fields; copy optional phone/birth_date.
     if (!out || !email) {
         if (err) *err = domain_error_validation("User: invalid arguments");
         return false;
@@ -149,8 +149,6 @@ static User *user_new_object(DomainError *err) {
     }
     return u;
 }
-
-/* Public API */
 
 User *user_create(
     const char *tag,
@@ -201,8 +199,6 @@ User *user_rehydrate(
 
     return u;
 }
-
-/* Getters */
 
 bool user_has_id(const User *u) {
     assert(u);
@@ -259,8 +255,6 @@ const char *user_password_hash(const User *u) {
     return u->password_hash;
 }
 
-/* Setters */
-
 bool user_set_tag(User *u, const char *tag, DomainError *err) {
     assert(u);
     return normalize_required(tag, "Tag", u->tag, sizeof(u->tag), err);
@@ -305,15 +299,11 @@ bool user_set_password_hash(User *u, const char *password_hash, DomainError *err
                               u->password_hash, sizeof(u->password_hash), err);
 }
 
-/* Persistence hook */
-
 void user_set_id_after_insert(User *u, UserId id) {
     if (!u) return;
     u->has_id = true;
     u->id = id;
 }
-
-/* Destructor */
 
 void user_free(User *u) {
     free(u);

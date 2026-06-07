@@ -19,7 +19,6 @@ pub struct User {
 }
 
 impl User {
-    /// Create a new user (not yet persisted in DB, so no id yet).
     pub fn create(
         tag: impl Into<String>,
         email: Email,
@@ -41,7 +40,6 @@ impl User {
         )
     }
 
-    /// Rehydrate an existing user loaded from DB (id is known).
     pub fn rehydrate(
         id: UserId,
         tag: impl Into<String>,
@@ -74,11 +72,13 @@ impl User {
         birth_date: Option<chrono::NaiveDate>,
         password_hash: impl Into<String>,
     ) -> Result<Self, DomainError> {
+        // 1. Trim and validate required string fields
         let tag = normalize_required(tag.into(), "Tag")?;
         let first_name = normalize_required(first_name.into(), "First name")?;
         let last_name = normalize_required(last_name.into(), "Last name")?;
         let password_hash = normalize_required(password_hash.into(), "Password hash")?;
 
+        // 2. Normalize optional phone (empty string becomes None)
         let phone = normalize_optional(phone);
 
         Ok(Self {
@@ -93,7 +93,6 @@ impl User {
         })
     }
 
-    // Getters
     pub fn id(&self) -> Option<UserId> { self.id }
     pub fn tag(&self) -> &str { &self.tag }
     pub fn email(&self) -> &Email { &self.email }
@@ -136,13 +135,13 @@ impl User {
         Ok(())
     }
 
-    /// Set id only after DB insert
     pub(crate) fn set_id_after_insert(&mut self, id: UserId) {
         self.id = Some(id);
     }
 }
 
 fn normalize_required(s: String, field: &str) -> Result<String, DomainError> {
+    // 1. Trim whitespace; reject if nothing remains
     let v = s.trim().to_string();
     if v.is_empty() {
         return Err(DomainError::validation(format!("{field} must not be empty")));
@@ -151,5 +150,6 @@ fn normalize_required(s: String, field: &str) -> Result<String, DomainError> {
 }
 
 fn normalize_optional(v: Option<String>) -> Option<String> {
+    // Treat blank/whitespace-only strings as absent
     v.map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
 }

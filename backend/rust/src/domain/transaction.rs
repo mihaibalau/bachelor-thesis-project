@@ -65,6 +65,7 @@ impl Transaction {
         recorded_on: Option<DateTime<Utc>>,
         description: String
     ) -> Result<Self, DomainError> {
+        // 1. Reject negative amounts and self-transfers
         if value_cents < 0 {
             return Err(DomainError::validation("Value must be >= 0"));
         }
@@ -75,6 +76,7 @@ impl Transaction {
             ));
         }
 
+        // 2. Normalize description and default recorded_on for new transactions
         let description = normalize_required(description.into(), "Description")?;
 
         Ok(Self {
@@ -127,6 +129,7 @@ impl Transaction {
 
 
 fn normalize_required(s: String, field: &str) -> Result<String, DomainError> {
+    // 1. Trim whitespace; reject if nothing remains
     let v = s.trim().to_string();
     if v.is_empty() {
         return Err(DomainError::validation(format!("{field} must not be empty")));

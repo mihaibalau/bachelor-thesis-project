@@ -1,4 +1,4 @@
-import { createTheme } from '@mui/material/styles';
+import { alpha, createTheme } from '@mui/material/styles';
 import type { PaletteMode, ThemeOptions } from '@mui/material';
 
 const getDesignTokens = (mode: PaletteMode): ThemeOptions => ({
@@ -52,7 +52,7 @@ const getDesignTokens = (mode: PaletteMode): ThemeOptions => ({
         },
     },
     shape: {
-        borderRadius: 10, // base – folosit de multe componente
+        borderRadius: 10,
     },
     components: {
         MuiPaper: {
@@ -60,38 +60,80 @@ const getDesignTokens = (mode: PaletteMode): ThemeOptions => ({
                 root: {
                     backgroundImage: 'none',
                     borderRadius: 14,
-                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                    boxShadow:
-                        '0 18px 45px rgba(0,0,0,0.55), 0 0 0 1px rgba(15,23,42,0.8)',
+                    ...(mode === 'dark'
+                        ? {
+                            border: '1px solid rgba(148, 163, 184, 0.3)',
+                            boxShadow:
+                                '0 18px 45px rgba(0,0,0,0.55), 0 0 0 1px rgba(15,23,42,0.8)',
+                        }
+                        : {
+                            border: '1px solid rgba(148, 163, 184, 0.22)',
+                            boxShadow: '0 1px 3px rgba(15, 23, 42, 0.06)',
+                        }),
                 },
             },
         },
         MuiButton: {
             defaultProps: {
-                variant: 'contained',
-                color: 'primary',
+                disableElevation: true,
             },
             styleOverrides: {
                 root: {
                     borderRadius: 10,
                     paddingInline: 20,
                     paddingBlock: 9,
-                    boxShadow:
-                        '0 10px 25px rgba(0,0,0,0.45), 0 0 0 1px rgba(161, 98, 7, 0.6)',
+                    boxShadow: 'none',
                 },
-                contained: {
-                    background:
-                        'linear-gradient(135deg, #f5c451 0%, #d79b2d 40%, #b8860b 100%)',
-                    color: '#050509',
-                    '&:hover': {
-                        background:
-                            'linear-gradient(135deg, #ffe29f 0%, #f5c451 40%, #d79b2d 100%)',
-                    },
+                contained: ({ theme }) => {
+                    const isDark = theme.palette.mode === 'dark';
+                    return {
+                        fontWeight: 600,
+                        color: isDark ? '#050509' : '#1a1206',
+                        background: isDark
+                            ? `linear-gradient(135deg, ${theme.palette.primary.light} 0%, ${theme.palette.primary.main} 55%, ${theme.palette.primary.dark} 100%)`
+                            : `linear-gradient(135deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
+                        border: `1px solid ${alpha(theme.palette.primary.dark, 0.5)}`,
+                        boxShadow: isDark
+                            ? `0 4px 14px ${alpha(theme.palette.primary.main, 0.26)}`
+                            : `0 3px 10px ${alpha(theme.palette.primary.dark, 0.2)}`,
+                        '&:hover': {
+                            background: isDark
+                                ? `linear-gradient(135deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`
+                                : `linear-gradient(135deg, ${theme.palette.primary.light} 0%, ${theme.palette.primary.main} 100%)`,
+                            boxShadow: isDark
+                                ? `0 6px 18px ${alpha(theme.palette.primary.main, 0.34)}`
+                                : `0 5px 14px ${alpha(theme.palette.primary.dark, 0.26)}`,
+                        },
+                        '&.Mui-disabled': {
+                            opacity: 0.55,
+                            color: isDark ? '#050509' : '#1a1206',
+                            boxShadow: 'none',
+                        },
+                    };
                 },
-                outlined: {
-                    borderColor: 'rgba(148,163,184,0.45)',
+                outlined: ({ theme }) => {
+                    const isDark = theme.palette.mode === 'dark';
+                    return {
+                        boxShadow: 'none',
+                        borderColor: alpha(theme.palette.divider, 0.95),
+                        color: theme.palette.text.primary,
+                        backgroundColor: isDark
+                            ? alpha(theme.palette.background.paper, 0.45)
+                            : theme.palette.background.paper,
+                        '&:hover': {
+                            boxShadow: 'none',
+                            borderColor: alpha(theme.palette.primary.main, 0.55),
+                            backgroundColor: alpha(
+                                theme.palette.primary.main,
+                                isDark ? 0.09 : 0.05,
+                            ),
+                        },
+                    };
+                },
+                text: {
+                    boxShadow: 'none',
                     '&:hover': {
-                        borderColor: '#f5c451',
+                        boxShadow: 'none',
                     },
                 },
             },

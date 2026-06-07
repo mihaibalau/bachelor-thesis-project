@@ -14,22 +14,13 @@
 #include "user_repo.h"
 #include "include/service_error.h"
 
-/* ── Password hashing (Argon2id via libargon2) ───────────────────────────── */
-/*
- * Mirrors the Rust UserService::register_user, which hashes the password
- * *inside the service* (on a blocking thread) rather than in the HTTP layer.
- * Keeping hashing here means the server layer never performs cryptographic /
- * business computation — it only (de)serializes and routes.
- *
- * Format: PHC encoded string "$argon2id$v=19$m=...,t=...,p=...$salt$hash",
- * exactly what the Rust `argon2` crate produces and what login verifies.
- */
+// Argon2id password hashing (PHC format; matches Rust argon2 crate).
 
-#define ARGON_T_COST       3            /* time cost (iterations)      */
-#define ARGON_M_COST       (64 * 1024)  /* memory cost in KiB (64 MiB) */
-#define ARGON_PARALLELISM  1            /* lanes                       */
-#define ARGON_HASH_LEN     32           /* bytes of hash               */
-#define ARGON_SALT_LEN     16           /* bytes of salt               */
+#define ARGON_T_COST       3
+#define ARGON_M_COST       (64 * 1024)
+#define ARGON_PARALLELISM  1
+#define ARGON_HASH_LEN     32
+#define ARGON_SALT_LEN     16
 #define ARGON_ENCODED_LEN  128
 
 static bool hash_password(const char *password, char out_encoded[ARGON_ENCODED_LEN]) {
@@ -67,7 +58,7 @@ static bool hash_password(const char *password, char out_encoded[ARGON_ENCODED_L
     return rc == ARGON2_OK;
 }
 
-/* UserRepo adapter */
+// UserRepo adapter.
 
 static bool user_repo_get_by_id_adapter(
     void *ctx,
@@ -137,7 +128,7 @@ UserRepository user_repository_from_user_repo(UserRepo *repo) {
     return r;
 }
 
-/* AccountRepo adapter (only list_for_user is needed by UserService) */
+// AccountRepo adapter.
 
 static bool account_repo_list_for_user_adapter(
     void *ctx, UserId user_id,
@@ -174,8 +165,6 @@ AccountRepository account_repository_from_account_repo(AccountRepo *repo) {
     return r;
 }
 
-/*  UserService implementation                                           */
-
 struct UserService {
     UserRepository    user_repo;
     AccountRepository account_repo;
@@ -196,8 +185,6 @@ void user_service_free(UserService *svc) {
     free(svc);
 }
 
-/* Internal helper: map RepoError -> ServiceError and free optional User* */
-
 static bool handle_repo_lookup_result(
     bool repo_ok,
     const RepoError *rerr,
@@ -206,7 +193,6 @@ static bool handle_repo_lookup_result(
     ServiceError *serr
 ) {
     if (repo_ok) {
-        /* Found entity; caller will use the User* and then free it. */
         if (serr) *serr = service_error_ok();
         return true;
     }
@@ -230,10 +216,6 @@ static bool handle_repo_lookup_result(
     return false;
 }
 
-/* --------------------------------------------------------------------- */
-/*  Public methods                                                       */
-/* --------------------------------------------------------------------- */
-
 bool user_service_register_user(UserService *svc,
                                 const RegisterUserCommand *cmd,
                                 UserId *out_user_id,
@@ -243,7 +225,7 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    /* 1. Validate email format using the domain type. */
+    // 1. Validate email via domain type.
     Email email;
     DomainError derr;
 
@@ -252,8 +234,7 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    /* 2. Check uniqueness for email. */
-
+    // 2. Check email uniqueness.
     User *tmp_user = NULL;
     RepoError rerr;
 
@@ -265,7 +246,6 @@ bool user_service_register_user(UserService *svc,
     );
 
     if (repo_ok) {
-        /* Found an existing user: conflict. */
         user_free(tmp_user);
         if (err) *err = service_error_conflict(
             "user",
@@ -275,13 +255,11 @@ bool user_service_register_user(UserService *svc,
     }
 
     if (rerr.code != REPO_ERROR_NOT_FOUND) {
-        /* Real error, not "not found". */
         if (err) *err = service_error_from_repo(&rerr);
         return false;
     }
 
-    /* 3. Check uniqueness for tag. */
-
+    // 3. Check tag uniqueness.
     tmp_user = NULL;
     repo_ok = svc->user_repo.vtable->get_by_tag(
         svc->user_repo.ctx,
@@ -304,8 +282,7 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    /* 4. Hash the password (Argon2id) — business logic kept in the service,
-     *    mirroring Rust's register_user which hashes via spawn_blocking. */
+    // 4. Hash password (Argon2id).
     if (!cmd->password) {
         if (err) *err = service_error_validation("password is required");
         return false;
@@ -317,8 +294,7 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    /* 5. Construct the domain User. All heavy validation happens here. */
-
+    // 5. Build domain User and persist.
     User *user = user_create(
         cmd->tag,
         &email,
@@ -333,8 +309,6 @@ bool user_service_register_user(UserService *svc,
         if (err) *err = service_error_from_domain(&derr);
         return false;
     }
-
-    /* 5. Persist the user through the repository. */
 
     UserId new_id;
     if (!svc->user_repo.vtable->insert(
@@ -351,7 +325,7 @@ bool user_service_register_user(UserService *svc,
     user_free(user);
     *out_user_id = new_id;
 
-    /* 6. Create a default account with the new user account + IBAN for it */
+    // 6. Create default RON Regular account with unique IBAN.
     IBAN default_iban;
     bool iban_exists = false;
 
@@ -417,7 +391,7 @@ bool user_service_login_user(UserService *svc,
         return false;
     }
 
-    /* 1. Validate the email */
+    // 1. Validate email.
     Email email;
     DomainError derr;
 
@@ -426,7 +400,7 @@ bool user_service_login_user(UserService *svc,
         return false;
     }
 
-    /* 2. Find the user by the email */
+    // 2. Load user by email.
     User *user = NULL;
     RepoError rerr;
 
@@ -445,7 +419,7 @@ bool user_service_login_user(UserService *svc,
         return false;
     }
 
-    /* 3. Check the password */
+    // 3. Verify password (Argon2id).
     const char *stored_hash = user_password_hash(user);
 
     int rc = argon2id_verify(
@@ -460,7 +434,6 @@ bool user_service_login_user(UserService *svc,
         return false;
     }
 
-    /* 4. Password match → return UserId. */
     UserId uid = user_id(user);
 
     strncpy(out->tag, user_tag(user), sizeof(out->tag) - 1);
@@ -482,8 +455,7 @@ bool user_service_get_user_with_accounts(UserService *svc,
         return false;
     }
 
-    /* 1. Load user. */
-
+    // 1. Load user.
     User *user = NULL;
     RepoError rerr_user;
 
@@ -503,8 +475,7 @@ bool user_service_get_user_with_accounts(UserService *svc,
         return false;
     }
 
-    /* 2. Load accounts for user. */
-
+    // 2. Load accounts for user.
     Account **accounts = NULL;
     size_t   account_count = 0;
     RepoError rerr_acc;
@@ -522,8 +493,6 @@ bool user_service_get_user_with_accounts(UserService *svc,
         if (err) *err = service_error_from_repo(&rerr_acc);
         return false;
     }
-
-    /* 3. Success: populate DTO. Caller owns user + accounts[]. */
 
     out->user = user;
     out->accounts = accounts;

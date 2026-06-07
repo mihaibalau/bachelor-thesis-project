@@ -8,7 +8,7 @@
 #include "../domain/include/error.h"
 
 struct AffiliateRepo {
-    Db *db; /* non-owning */
+    Db *db;
 };
 
 AffiliateRepo *affiliate_repo_new(Db *db) {
@@ -29,7 +29,7 @@ static int cmd_rows_affected(PGresult *res) {
     return atoi(s);
 }
 
-/* Row mapping -> Affiliate*. */
+// Map PG row -> domain Affiliate.
 static bool affiliate_repo_row_to_domain(
     PGresult *res,
     int row,
@@ -64,7 +64,7 @@ static bool affiliate_repo_row_to_domain(
     return true;
 }
 
-/* Public API */
+// Public API
 
 bool affiliate_repo_get(
     AffiliateRepo *repo,
@@ -187,6 +187,7 @@ bool affiliate_repo_insert(
     const Affiliate *affiliate,
     RepoError *err
 ) {
+    // 1. INSERT affiliate row.
     if (!repo || !affiliate) {
         if (err) *err = repo_error_db("AffiliateRepo::insert: invalid arguments");
         return false;

@@ -20,7 +20,8 @@ Both backends (Rust and C) expose the same routes, request bodies, response shap
                 ┌──────────────▼───────────────┐
                 │      server/router.rs        │
                 │  nest /api/{users,accounts,  │
-                │  affiliates,transactions}    │
+                │  affiliates,transactions,    │
+                │  dashboard}                │
                 └──────┬───────────┬───────────┘
                        │           │
        ┌───────────────▼──┐   ┌────▼────────────────────────────┐
@@ -46,8 +47,9 @@ Each file below lists public items with purpose, behaviour, and what the handler
 - `pub fn create_router(state: Arc<AppState>) -> Router`
   - Purpose: Assemble the full application router.
   - Behaviour:
-    - Nests `routes::users::router`, `routes::accounts::router`, `routes::affiliates::router`, `routes::transactions::router` under `/api/...`.
-    - Applies `CorsLayer::permissive()` and `TraceLayer::new_for_http()`.
+    - Nests `routes::users::router`, `routes::accounts::router`, `routes::affiliates::router`, `routes::transactions::router`, and `routes::dashboard::router` under `/api/...`.
+    - Applies a `CorsLayer` that allows the exact origin from the `CORS_ORIGIN` env var (default `http://localhost:5173`) with `allow_methods(Any)` and `allow_headers(Any)`.
+    - Applies the structured HTTP tracing layer from `server::logging::http_trace_layer()`.
     - Shares `AppState` via `.with_state(state)`.
 
 ---
@@ -94,6 +96,18 @@ Each file below lists public items with purpose, behaviour, and what the handler
   - Purpose: Map every `ServiceError` variant to HTTP status + `{ status, code, message }` JSON (see HTTP API section below).
 
 - `pub type ApiResult<T> = Result<T, ApiError>` – standard handler return type.
+
+---
+
+### `server/logging.rs`
+
+Tracing setup and the HTTP trace layer (see [`backend/LOGGING.md`](../../../LOGGING.md) for the full logging contract).
+
+- `pub fn init_tracing() -> anyhow::Result<()>`
+  - Purpose: Initialize `tracing_subscriber` from `RUST_LOG` (default `info`), `DEBUG_MODE` (adds `rust=debug,tower_http=debug`), and `LOG_FORMAT` (`json` → CloudWatch-friendly JSON, otherwise text). Logs startup metadata including `SERVICE_NAME` (default `gentlix-rust`).
+
+- `pub fn http_trace_layer() -> TraceLayer<...>`
+  - Purpose: One span per request (`method`, `path`, `query`, `request_id` from `X-Request-Id` / `X-Amzn-Trace-Id` or auto-generated `req-N`); on response logs `status` + `latency_ms` at `info`/`warn`/`error` by status class.
 
 ---
 
@@ -530,6 +544,7 @@ Query params (all optional):
 | `page_size` | u32 | default 20, clamped [1, 100] |
 | `search` | str | substring on nickname or recipient name; **ignored if length < 2** |
 | `currency` | str | e.g. `RON`, `EUR` |
+| `for_send_currency` | str | keep only affiliates whose recipient account currency matches (used by the Send flow) |
 | `sort` | str | `"asc"` (default) or `"desc"` by nickname |
 
 Example: `GET /api/affiliates?page=1&page_size=10&search=jo&currency=RON&sort=asc`
@@ -738,6 +753,12 @@ Response `200 OK`:
 
 ---
 
+#### Transaction summary (filtered)
+
+- **GET** `/api/transactions/summary?from=YYYY-MM-DD&to=YYYY-MM-DD&account_id=&transaction_type=&per_account_limit=500`
+
+Filtered aggregates for the Statistics page: totals, per-type volumes, daily net flow, cumulative spending, payment categories, and account balances. All computation happens in the service layer.
+
 #### User monthly summary
 
 - **GET** `/api/transactions/summary/monthly?per_account_limit=500`
@@ -775,6 +796,14 @@ Internal transfers between the user's own accounts are deduplicated and net to z
 
 ---
 
+#### Dashboard
+
+- **GET** `/api/dashboard`
+
+Aggregated home-screen data: total balance, balance change %, spending chart, recent activity, affiliate count. Implemented in `routes/dashboard.rs`.
+
+---
+
 ## Request lifecycle
 
 ```
@@ -790,11 +819,15 @@ Client → axum router → [require_auth on private routes]
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | local dev DSN in `main.rs` |
-| `JWT_SECRET` | HMAC secret for JWT | dev default in `main.rs` |
+| `DATABASE_URL` | PostgreSQL connection string | **required** |
+| `JWT_SECRET` | HMAC secret for JWT | **required** |
+| `CORS_ORIGIN` | Allowed browser origin | `http://localhost:5173` |
+| `PORT` | HTTP listen port | `6767` |
 | `RUST_LOG` | Tracing filter | `info` |
 
-Server listens on `0.0.0.0:6767` (see `main.rs`).
+Additional logging variables (`LOG_FORMAT`, `DEBUG_MODE`, `SERVICE_NAME`) are documented in [`backend/LOGGING.md`](../../../LOGGING.md). Server binds `0.0.0.0:$PORT` (default 6767; see `main.rs`).
+
+> **Build note:** the DB layer uses `sqlx::query!` compile-time macros. Building requires either a reachable `DATABASE_URL` at compile time or a committed offline cache (`cargo sqlx prepare` → `.sqlx/`, built with `SQLX_OFFLINE=true`). See [`deploy/AWS.md`](../../../../deploy/AWS.md).
 
 ---
 

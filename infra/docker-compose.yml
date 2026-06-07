@@ -1,15 +1,106 @@
+# Gentlix Bank — local / single-host stack.
+#
+# Postgres always runs. The two backends implement the SAME API and both bind
+# port 6767, so they are gated behind compose profiles — run only ONE at a time:
+#
+#   docker compose -f infra/docker-compose.yml up -d db
+#   docker compose -f infra/docker-compose.yml --profile migrate run --rm migrate
+#   docker compose -f infra/docker-compose.yml --profile rust up -d --build      # Rust backend + frontend
+#   docker compose -f infra/docker-compose.yml --profile c    up -d --build      # C backend + frontend
+#
+# Copy infra/.env.example -> infra/.env and adjust before running.
+
 services:
   db:
     image: postgres:16
     container_name: gentlix-postgres
     environment:
-      POSTGRES_USER: mihai
-      POSTGRES_PASSWORD: admingentlix01
-      POSTGRES_DB: gentlix_bank
+      POSTGRES_USER: ${POSTGRES_USER:-mihai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-gentlix_bank}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - gentlix_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mihai} -d ${POSTGRES_DB:-gentlix_bank}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot migration runner: applies 001 -> 002 -> 003 in order.
+  # Seeds are optional and not run automatically (see db/seeds/).
+  migrate:
+    image: postgres:16
+    profiles: ["migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        for f in 001_init 002_transaction_type_payment 003_account_per_type_currency; do
+          echo "Applying $$f.sql"
+          psql -h db -U ${POSTGRES_USER:-mihai} -d ${POSTGRES_DB:-gentlix_bank} -f /migrations/$$f.sql
+        done
+        echo "Migrations complete."
+    volumes:
+      - ../db/migrations:/migrations:ro
+
+  backend-rust:
+    profiles: ["rust"]
+    build:
+      context: ../backend/rust
+    container_name: gentlix-rust
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mihai}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-gentlix_bank}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in infra/.env}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      PORT: "6767"
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      SERVICE_NAME: gentlix-rust
+      RUST_LOG: ${RUST_LOG:-info,tower_http=warn}
+    ports:
+      - "6767:6767"
+
+  backend-c:
+    profiles: ["c"]
+    build:
+      context: ../backend/c
+    container_name: gentlix-c
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mihai}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-gentlix_bank}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in infra/.env}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      PORT: "6767"
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+      SERVICE_NAME: gentlix-c
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "6767:6767"
+    # main.c blocks on getchar(); keep stdin open so the process does not exit
+    # immediately in a headless container. (Not suitable as-is for ECS/Fargate.)
+    stdin_open: true
+    tty: true
+
+  frontend:
+    profiles: ["rust", "c"]
+    build:
+      context: ../frontend/react
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:6767/api}
+    container_name: gentlix-frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
 
 volumes:
   gentlix_pgdata:

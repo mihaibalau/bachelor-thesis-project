@@ -19,17 +19,10 @@
 #include <stdio.h>
 #include <time.h>
 
-/*
- * Users HTTP routes — thin layer. Body buffering, CORS, JSON/error response
- * helpers live in http_util.c and are shared with every other route file.
- *
- * Mirrors backend/rust/src/server/routes/users.rs:
- *   POST /api/users         → register_user
- *   POST /api/users/login   → login_user
- *   GET  /api/users/{id}    → get_user_with_accounts  (auth required)
- */
+// Users routes: parse/serialize only; business logic in UserService.
+// POST /api/users, POST /api/users/login, GET /api/users/{id} (auth).
 
-/* ── POST /api/users  (register) ──────────────────────────────────────────── */
+// ── POST /api/users (register) ────────────────────────────────────────────
 
 static enum MHD_Result handle_register(
     AppState *state,
@@ -48,27 +41,31 @@ static enum MHD_Result handle_register(
     const char *first_name = json_string_value(json_object_get(root, "first_name"));
     const char *last_name  = json_string_value(json_object_get(root, "last_name"));
     const char *password   = json_string_value(json_object_get(root, "password"));
-    const char *phone      = json_string_value(json_object_get(root, "phone"));       /* opt */
-    const char *birth_date = json_string_value(json_object_get(root, "birth_date")); /* opt */
+    const char *phone      = json_string_value(json_object_get(root, "phone"));
+    const char *birth_date = json_string_value(json_object_get(root, "birth_date"));
 
     if (!tag || !email || !first_name || !last_name || !password) {
         json_decref(root);
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"tag, email, first_name, last_name and password are required\"}");
     }
 
-    /* birth_date "YYYY-MM-DD" → struct tm */
+    // 1. Parse optional birth_date (YYYY-MM-DD) into struct tm.
     struct tm birth_date_tm  = {0};
     struct tm *birth_date_ptr = NULL;
     if (birth_date) {
         int y, m, d;
-        if (sscanf(birth_date, "%d-%d-%d", &y, &m, &d) == 3) {
-            birth_date_tm.tm_year = y - 1900;
-            birth_date_tm.tm_mon  = m - 1;
-            birth_date_tm.tm_mday = d;
-            birth_date_ptr = &birth_date_tm;
+        if (sscanf(birth_date, "%d-%d-%d", &y, &m, &d) != 3) {
+            json_decref(root);
+            return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+                "{\"status\":400,\"code\":\"validation_error\","
+                "\"message\":\"invalid birth_date (expected YYYY-MM-DD)\"}");
         }
+        birth_date_tm.tm_year = y - 1900;
+        birth_date_tm.tm_mon  = m - 1;
+        birth_date_tm.tm_mday = d;
+        birth_date_ptr = &birth_date_tm;
     }
 
     RegisterUserCommand cmd = {
@@ -78,7 +75,7 @@ static enum MHD_Result handle_register(
         .last_name      = last_name,
         .phone_opt      = phone,
         .birth_date_opt = birth_date_ptr,
-        .password       = password,   /* hashing happens inside the service */
+        .password       = password,
     };
 
     UserId new_id;
@@ -90,11 +87,10 @@ static enum MHD_Result handle_register(
 
     char resp[64];
     snprintf(resp, sizeof resp, "{\"user_id\":%lld}", (long long)new_id.value);
-    /* Rust returns 200 OK (axum Json default) for register; match it. */
     return http_send_json(conn, MHD_HTTP_OK, resp);
 }
 
-/* ── POST /api/users/login ────────────────────────────────────────────────── */
+// ── POST /api/users/login ──────────────────────────────────────────────────
 
 static enum MHD_Result handle_login(
     AppState *state,
@@ -113,8 +109,8 @@ static enum MHD_Result handle_login(
 
     if (!email || !password) {
         json_decref(root);
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"email and password are required\"}");
     }
 
@@ -133,7 +129,7 @@ static enum MHD_Result handle_login(
         return http_send_service_error(conn, &serr);
     }
 
-    /* Generate JWT */
+    // 1. Issue JWT on successful login.
     char token[512];
     ServiceError jwt_err;
 
@@ -146,21 +142,28 @@ static enum MHD_Result handle_login(
         return http_send_service_error(conn, &jwt_err);
     }
 
-    char resp[640];
-    snprintf(resp, sizeof resp,
-             "{\"token\":\"%s\",\"user_id\":%lld}",
-             token, (long long)result.user_id.value);
+    json_t *resp = json_object();
+    json_object_set_new(resp, "token", json_string(token));
+    json_object_set_new(resp, "user_id", json_integer((json_int_t)result.user_id.value));
+    char *resp_str = json_dumps(resp, JSON_COMPACT);
+    json_decref(resp);
 
-    return http_send_json(conn, MHD_HTTP_OK, resp);
+    enum MHD_Result ret;
+    if (resp_str) {
+        ret = http_send_json(conn, MHD_HTTP_OK, resp_str);
+        free(resp_str);
+    } else {
+        ServiceError e = service_error_internal("json serialization failed");
+        ret = http_send_service_error(conn, &e);
+    }
+    return ret;
 }
-
-/* ── Public ──────────────────────────────────────────────────────────────── */
 
 enum MHD_Result http_users_not_found(struct MHD_Connection *conn) {
     return http_send_not_found(conn);
 }
 
-/* ── Dispatcher ──────────────────────────────────────────────────────────── */
+// ── Dispatcher ────────────────────────────────────────────────────────────
 
 enum MHD_Result http_users_dispatch(
     AppState *state,
@@ -176,14 +179,13 @@ enum MHD_Result http_users_dispatch(
         return http_send_empty(conn, MHD_HTTP_NO_CONTENT);
     }
 
-    /* GET /api/users/{id} — no body */
     if (strcmp(method, MHD_HTTP_METHOD_GET) == 0) {
         if (subpath && subpath[0] == '/' && subpath[1] != '\0') {
             char *endptr = NULL;
             long id_long = strtol(subpath + 1, &endptr, 10);
             if (*endptr != '\0' || id_long <= 0) {
-                return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-                    "{\"status\":422,\"code\":\"validation_error\","
+                return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+                    "{\"status\":400,\"code\":\"validation_error\","
                     "\"message\":\"invalid user id\"}");
             }
             UserId uid = { .value = (int64_t)id_long };
@@ -192,9 +194,8 @@ enum MHD_Result http_users_dispatch(
         return http_users_not_found(conn);
     }
 
-    /* POST — accumulate the body across multiple libmicrohttpd calls */
     if (strcmp(method, MHD_HTTP_METHOD_POST) == 0) {
-
+        // 1. Buffer POST body across libmicrohttpd callbacks.
         if (*con_cls == NULL) {
             BodyBuffer *bb = body_buffer_new();
             if (!bb) return MHD_NO;
@@ -233,7 +234,7 @@ enum MHD_Result http_users_dispatch(
     return http_users_not_found(conn);
 }
 
-/* ── GET /api/users/{id} ─────────────────────────────────────────────────── */
+// ── GET /api/users/{id} ───────────────────────────────────────────────────
 
 enum MHD_Result http_users_get_user_with_accounts(
     AppState *state,
@@ -249,7 +250,7 @@ enum MHD_Result http_users_get_user_with_accounts(
             "\"message\":\"missing or invalid token\"}");
     }
 
-    /* echivalent Rust: if claims.sub != id { return Err(Forbidden) } */
+    // 1. Enforce self-access only (claims.sub must match path id).
     if (claims.sub.value != path_user_id.value) {
         ServiceError forbidden = service_error_forbidden();
         return http_send_service_error(conn, &forbidden);
@@ -261,8 +262,7 @@ enum MHD_Result http_users_get_user_with_accounts(
         return http_send_service_error(conn, &serr);
     }
 
-    /* ── user object ──────────────────────────────────────────────────────── */
-
+    // 2. Serialize user object.
     json_t *user_obj = json_object();
 
     json_object_set_new(user_obj, "id",
@@ -276,7 +276,6 @@ enum MHD_Result http_users_get_user_with_accounts(
     json_object_set_new(user_obj, "last_name",
         json_string(user_last_name(dto.user)));
 
-    /* phone — optional */
     if (user_has_phone(dto.user)) {
         json_object_set_new(user_obj, "phone",
             json_string(user_phone(dto.user)));
@@ -284,7 +283,6 @@ enum MHD_Result http_users_get_user_with_accounts(
         json_object_set_new(user_obj, "phone", json_null());
     }
 
-    /* birth_date — optional, serialized as "YYYY-MM-DD" */
     if (user_has_birth_date(dto.user)) {
         struct tm bd = user_birth_date(dto.user);
         char date_str[11];
@@ -294,8 +292,7 @@ enum MHD_Result http_users_get_user_with_accounts(
         json_object_set_new(user_obj, "birth_date", json_null());
     }
 
-    /* ── accounts array ───────────────────────────────────────────────────── */
-
+    // 3. Serialize accounts array.
     json_t *accs = json_array();
     for (size_t i = 0; i < dto.account_count; ++i) {
         Account *a  = dto.accounts[i];
@@ -315,8 +312,7 @@ enum MHD_Result http_users_get_user_with_accounts(
         json_array_append_new(accs, ao);
     }
 
-    /* ── root → serialize → send ──────────────────────────────────────────── */
-
+    // 4. Send response and free DTO.
     json_t *root = json_object();
     json_object_set_new(root, "user", user_obj);
     json_object_set_new(root, "accounts", accs);
@@ -333,7 +329,6 @@ enum MHD_Result http_users_get_user_with_accounts(
         ret = http_send_service_error(conn, &internal);
     }
 
-    /* cleanup — we own dto after the service call */
     user_free(dto.user);
     for (size_t i = 0; i < dto.account_count; ++i) account_free(dto.accounts[i]);
     free(dto.accounts);

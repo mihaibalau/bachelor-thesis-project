@@ -160,9 +160,10 @@ typedef struct ListAffiliatesParams {
     uint32_t    page;
     bool        has_page_size;
     uint32_t    page_size;
-    const char *search_opt;     /* NULL or borrowed string */
-    const char *currency_opt;   /* NULL or borrowed string */
-    const char *sort_opt;       /* NULL, "asc" or "desc"   */
+    const char *search_opt;           /* NULL or borrowed string */
+    const char *currency_opt;         /* NULL or borrowed string */
+    const char *for_send_currency_opt; /* NULL or borrowed string */
+    const char *sort_opt;             /* NULL, "asc" or "desc"   */
 } ListAffiliatesParams;
 
 void paginated_affiliates_view_free(PaginatedAffiliatesView *view);
@@ -244,6 +245,18 @@ bool affiliate_service_delete_affiliate(
     AffiliateService *svc,
     UserId owner_user_id,
     AccountId recipient_sub_account_id,
+    ServiceError *err
+);
+
+/*
+ * validate_send_target: ensure recipient is a saved affiliate with a Regular
+ * account in the same currency as the sender account.
+ */
+bool affiliate_service_validate_send_target(
+    AffiliateService *svc,
+    UserId owner_user_id,
+    AccountId from_account_id,
+    AccountId recipient_account_id,
     ServiceError *err
 );
 

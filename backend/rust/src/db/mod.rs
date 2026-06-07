@@ -14,6 +14,7 @@ pub struct Db {
 
 impl Db {
     pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
+        // 1. Open a bounded connection pool to Postgres
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(database_url)

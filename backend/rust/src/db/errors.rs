@@ -28,6 +28,7 @@ impl fmt::Display for RepoError {
 
 impl std::error::Error for RepoError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // NotFound is a leaf error with no underlying cause
         match self {
             RepoError::Db(e) => Some(e),
             RepoError::Domain(e) => Some(e),

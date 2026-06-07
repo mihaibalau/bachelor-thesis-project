@@ -21,13 +21,15 @@ export interface RegisterRequest {
 }
 
 export interface RegisterResponse {
-    id: number;
+    user_id: number;
 }
 
+// Exchange credentials for JWT and user id.
 export function login(req: LoginRequest) {
     return apiClient.post<LoginResponse, LoginRequest>('/users/login', req);
 }
 
+// Create a new user account (does not sign in).
 export function registerUser(req: RegisterRequest) {
     return apiClient.post<RegisterResponse, RegisterRequest>('/users', req);
 }

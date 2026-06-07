@@ -11,7 +11,7 @@
 #include "../domain/include/error.h"
 
 struct AccountRepo {
-    Db *db; /* non-owning */
+    Db *db;
 };
 
 AccountRepo *account_repo_new(Db *db) {
@@ -26,7 +26,7 @@ void account_repo_free(AccountRepo *repo) {
     free(repo);
 }
 
-/* Internal helper: build Account from a PGresult row 0-based index. */
+// Map PG row -> domain Account.
 static bool account_repo_row_to_domain(
     PGresult *res,
     int row,
@@ -92,6 +92,7 @@ static bool account_repo_row_to_domain(
 }
 
 bool account_repo_get_by_id(AccountRepo *repo, AccountId id, Account **out, RepoError *err) {
+    // 1. Query by id; map row to domain or NotFound.
     if (!repo || !out) {
         if (err) *err = repo_error_db("AccountRepo::get_by_id: invalid arguments");
         return false;
@@ -223,6 +224,7 @@ bool account_repo_list_for_user(
 }
 
 bool account_repo_insert(AccountRepo *repo, const Account *account, AccountId *out_id, RepoError *err) {
+    // 1. INSERT row; return generated id.
     if (!repo || !account || !out_id) {
         if (err) *err = repo_error_db("AccountRepo::insert: invalid arguments");
         return false;

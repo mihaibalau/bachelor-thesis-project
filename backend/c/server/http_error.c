@@ -10,11 +10,7 @@ ApiErrorBody http_error_from_service_error(const ServiceError *err) {
         return body;
     }
 
-    /*
-     * Status/code mapping mirrors the Rust `ApiError::into_response`
-     * (server/error.rs) one-for-one so both backends return identical
-     * HTTP statuses and error `code` strings for the same ServiceError.
-     */
+    // Map ServiceError to HTTP status + code (parity with Rust server/error.rs).
     switch (err->code) {
         case SERVICE_ERROR_NOT_FOUND:
             body.status  = 404;

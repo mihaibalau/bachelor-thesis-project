@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, middleware, routing::{delete, get, post}, Extension, Json, Router};
+use axum::{extract::{Path, State}, middleware, routing::{get, post}, Extension, Json, Router};
 use serde::{Deserialize, Serialize};
-use tracing::info;
 use crate::{
     server::{
         state::AppState,
@@ -16,7 +15,6 @@ use crate::{
 };
 use crate::server::auth::require_auth;
 use crate::service::auth::{Claims, LoginUserCommand};
-// ── Request DTOs ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -34,8 +32,6 @@ pub struct RegisterUserRequest {
     pub birth_date: Option<String>,
     pub password: String,
 }
-
-// ── Response DTOs ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct LoginResponse {
@@ -74,8 +70,6 @@ pub struct UserWithAccountsResponse {
     pub accounts: Vec<AccountResponse>,
 }
 
-// ── Router ────────────────────────────────────────────────────────────────────
-
 pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public = Router::new()
         .route("/",       post(register_user))
@@ -93,14 +87,11 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(private)
 }
 
-// ── Handlers ──────────────────────────────────────────────────────────────────
-
 async fn login_user(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    info!(method = "POST", path = "/api/users/login", "incoming request");
-
+    // 1. Delegate to service
     let cmd = LoginUserCommand {
         email: body.email,
         password: body.password,
@@ -121,8 +112,7 @@ async fn register_user(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterUserRequest>,
 ) -> ApiResult<Json<RegisterUserResponse>> {
-    info!(method = "POST", path = "/api/users", "incoming request");
-
+    // 1. Parse birth_date, build command
     let birth_date = body
         .birth_date
         .as_deref()
@@ -140,6 +130,7 @@ async fn register_user(
         password: body.password,
     };
 
+    // 2. Delegate to service
     let id = state.user_svc.register_user(cmd).await.map_err(ApiError::from)?;
 
     Ok(Json(RegisterUserResponse { user_id: id.into() }))
@@ -150,20 +141,21 @@ pub async fn get_user_with_accounts(
     Path(id): Path<i64>,
     Extension(claims): Extension<Claims>,
 ) -> ApiResult<Json<UserWithAccountsResponse>> {
-    info!(method = "GET", path = "/api/users/{id}", id, "incoming request");
-
+    // 1. Auth check — user can only read own profile
     if claims.sub != id {
         return Err(ApiError(ServiceError::Forbidden));
     }
 
     let user_id = UserId::from(id);
 
+    // 2. Delegate to service
     let UserWithAccounts { user, accounts } = state
         .user_svc
         .get_user_with_accounts(user_id)
         .await
         .map_err(ApiError::from)?;
 
+    // 3. Map domain → response DTO
     Ok(Json(UserWithAccountsResponse {
         user: UserResponse {
             id: user.id().unwrap().0,

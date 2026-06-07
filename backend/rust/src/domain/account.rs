@@ -59,7 +59,7 @@ impl Account{
         balance_cents: i64,
         iban: IBAN,
     ) -> Result<Self, DomainError> {
-
+        // 1. Reject negative opening balance
         if balance_cents < 0 {
             return Err(DomainError::validation("Balance must be >= 0"));
         }
@@ -82,9 +82,11 @@ impl Account{
     pub fn iban(&self) -> &IBAN { &self.iban }
 
     pub fn credit(&mut self, amount_cents: i64) -> Result<(), DomainError> {
+        // 1. Require a positive credit amount
         if amount_cents <= 0 {
             return Err(DomainError::validation("Credit amount must be > 0"));
         }
+        // 2. Add to balance, guarding against i64 overflow
         self.balance_cents = self
             .balance_cents
             .checked_add(amount_cents)
@@ -93,9 +95,11 @@ impl Account{
     }
 
     pub fn debit(&mut self, amount_cents: i64) -> Result<(), DomainError> {
+        // 1. Require a positive debit amount
         if amount_cents <= 0 {
             return Err(DomainError::validation("Debit amount must be > 0"));
         }
+        // 2. Ensure sufficient funds before subtracting
         if self.balance_cents < amount_cents {
             return Err(DomainError::validation("Insufficient funds"));
         }

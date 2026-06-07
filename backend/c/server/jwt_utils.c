@@ -31,12 +31,12 @@ static char *b64url_encode(const unsigned char *data, size_t len) {
     out[bptr->length] = '\0';
     BIO_free_all(b64);
 
-    /* convert to base64url */
+    // 1. Convert to base64url (+/ → -_).
     for (size_t i = 0; out[i]; ++i) {
         if (out[i] == '+') out[i] = '-';
         else if (out[i] == '/') out[i] = '_';
     }
-    /* strip padding '=' */
+    // 2. Strip padding '='.
     size_t olen = strlen(out);
     while (olen > 0 && out[olen - 1] == '=') out[--olen] = '\0';
 
@@ -104,8 +104,6 @@ bool jwt_decode_user_id(
 ) {
     // JWT = header.payload.signature
 
-    fprintf(stderr, "[jwt_decode] token = '%s'\n", token); // ← ADAUGĂ ASTA
-
     // 1. Split the token
     const char *dot1 = strchr(token, '.');
     if (!dot1) {
@@ -146,7 +144,6 @@ bool jwt_decode_user_id(
     }
 
     if (CRYPTO_memcmp(computed_sig, token_sig, 32) != 0) {
-        fprintf(stderr, "[jwt_decode] SIGNATURE MISMATCH\n"); // ← ADAUGĂ ASTA
         free(token_sig);
         if (err) *err = service_error_validation("invalid JWT signature");
         return false;
@@ -207,8 +204,6 @@ bool jwt_decode_user_id(
 
     out_user_id->value = (int64_t)json_integer_value(sub_j);
 
-    fprintf(stderr, "[jwt_decode] sub = %lld\n", (long long)out_user_id->value); // ← ADAUGĂ ASTA
-
     json_decref(root);
 
     if (err) *err = service_error_ok();
@@ -232,8 +227,8 @@ bool jwt_encode_user_id(
         return false;
     }
 
-    // Payload: {"sub": user_id, "exp": now+3600}
-    time_t exp = time(NULL) + 3600;
+    // Payload: {"sub": user_id, "exp": now+24h} — matches Rust JWT lifetime
+    time_t exp = time(NULL) + 86400;
     char payload_json[256];
     snprintf(payload_json, sizeof payload_json,
              "{\"sub\":%lld,\"tag\":\"%s\",\"exp\":%lld}",

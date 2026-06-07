@@ -10,7 +10,7 @@
 #include "../domain/include/email.h"
 
 struct UserRepo {
-    Db *db; /* non-owning */
+    Db *db;
 };
 
 UserRepo *user_repo_new(Db *db) {
@@ -24,8 +24,6 @@ UserRepo *user_repo_new(Db *db) {
 void user_repo_free(UserRepo *repo) {
     free(repo);
 }
-
-/* Helpers */
 
 static int cmd_rows_affected(PGresult *res) {
     const char *s = PQcmdTuples(res);
@@ -121,7 +119,7 @@ static bool user_repo_row_to_domain(
     return true;
 }
 
-/* SELECT helpers */
+// SELECT helpers
 
 static bool user_repo_get_single_by_where(
     UserRepo *repo,
@@ -165,7 +163,7 @@ static bool user_repo_get_single_by_where(
     return ok;
 }
 
-/* Public API */
+// Public API
 
 bool user_repo_get_by_id(UserRepo *repo, UserId id, User **out, RepoError *err) {
     char id_buf[32];
@@ -182,6 +180,7 @@ bool user_repo_get_by_tag(UserRepo *repo, const char *tag, User **out, RepoError
 }
 
 bool user_repo_insert(UserRepo *repo, const User *user, UserId *out_id, RepoError *err) {
+    // 1. INSERT row; return generated id.
     if (!repo || !user || !out_id) {
         if (err) *err = repo_error_db("UserRepo::insert: invalid arguments");
         return false;

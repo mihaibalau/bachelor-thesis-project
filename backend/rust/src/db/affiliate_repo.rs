@@ -60,7 +60,6 @@ impl AffiliateRepo {
     }
 
     pub async fn insert(&self, affiliate: &Affiliate) -> Result<(), RepoError> {
-
         sqlx::query!(
             r#"
             INSERT INTO affiliates (owner_user_id, recipient_sub_account_id, nickname)
@@ -77,8 +76,10 @@ impl AffiliateRepo {
     }
 
     pub async fn update_nickname(&self, owner_user_id: UserId, recipient_sub_account_id: AccountId, nickname: &str) -> Result<(), RepoError> {
+        // 1. Reuse domain validation for the new nickname
         let _ = Affiliate::new(owner_user_id, recipient_sub_account_id, nickname.to_string())?;
 
+        // 2. Apply update; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
             UPDATE affiliates
@@ -100,6 +101,7 @@ impl AffiliateRepo {
     }
 
     pub async fn delete(&self, owner_user_id: UserId, recipient_sub_account_id: AccountId) -> Result<(), RepoError> {
+        // 1. Delete composite key; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
             DELETE FROM affiliates
@@ -119,6 +121,7 @@ impl AffiliateRepo {
     }
 
     pub async fn exists(&self, owner_user_id: UserId, recipient_sub_account_id: AccountId, ) -> Result<bool, RepoError> {
+        // Presence check via LIMIT 1 — no full row fetch needed
         let rec = sqlx::query!(
             r#"
             SELECT 1 as "exists!"
@@ -140,6 +143,7 @@ impl TryFrom<AffiliateRow> for Affiliate {
     type Error = DomainError;
 
     fn try_from(row: AffiliateRow) -> Result<Self, Self::Error> {
+        // Re-run domain validation when loading from DB
         Affiliate::new(
             UserId(row.owner_user_id),
             AccountId(row.recipient_sub_account_id),

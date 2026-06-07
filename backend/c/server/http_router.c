@@ -4,22 +4,13 @@
 #include "include/http_accounts.h"
 #include "include/http_affiliates.h"
 #include "include/http_transactions.h"
+#include "include/http_dashboard.h"
 #include "include/http_util.h"
+#include "../util/include/log.h"
 
-/*
- * Top-level URL dispatch.
- *   /api/users        → http_users_dispatch
- *   /api/accounts     → http_accounts_dispatch
- *   /api/affiliates   → http_affiliates_dispatch
- *   /api/transactions → http_transactions_dispatch
- *
- * Each group receives the URL with its prefix stripped (the "subpath"),
- * exactly like axum's `.nest()`.
- */
+// Top-level dispatch: strip /api/<group> prefix and forward subpath (axum .nest()).
 
-/* Match `prefix` at the start of `url` only at a path boundary (next char is
- * '\0' or '/'), and return the remaining subpath. Prevents "/api/accountsX"
- * from matching "/api/accounts". */
+// Match prefix at a path boundary; return remaining subpath.
 static const char *match_prefix(const char *url, const char *prefix) {
     size_t plen = strlen(prefix);
     if (strncmp(url, prefix, plen) != 0) return NULL;
@@ -41,6 +32,12 @@ enum MHD_Result http_request_handler(
     (void)version;
     AppState *state = (AppState *)cls;
 
+    // 1. Log non-OPTIONS requests.
+    if (strcmp(method, "OPTIONS") != 0) {
+        LOG_INFO("http_request", "method=%s path=%s", method, url);
+    }
+
+    // 2. Match route group and delegate to sub-dispatcher.
     const char *subpath;
 
     if ((subpath = match_prefix(url, "/api/users")) != NULL) {
@@ -65,6 +62,10 @@ enum MHD_Result http_request_handler(
         return http_transactions_dispatch(
             state, connection, subpath, method,
             upload_data, upload_data_size, con_cls);
+    }
+
+    if ((subpath = match_prefix(url, "/api/dashboard")) != NULL) {
+        return http_dashboard_dispatch(state, connection, subpath, method);
     }
 
     return http_send_not_found(connection);

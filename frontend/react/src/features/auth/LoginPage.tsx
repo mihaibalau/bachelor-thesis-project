@@ -25,10 +25,12 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { useColorMode } from '../theme/useColorMode';
 import gentlixLogo from '../../assets/logo.png';
+import { AUTH_PRIMARY_BUTTON_SX } from '../../shared/buttonStyles';
+import { ApiError } from '../../shared/apiError';
 
 const LoginSchema = z.object({
     email: z.string().email('Please enter a valid email address'),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
+    password: z.string().min(1, 'Password is required'),
 });
 
 type LoginFormValues = z.infer<typeof LoginSchema>;
@@ -55,17 +57,20 @@ export function LoginPage() {
     });
 
     const onSubmit = async (data: LoginFormValues) => {
+        // 1. Clear prior server error, call auth API via context.
         setServerError(null);
         try {
             await loginUser({
                 email: data.email,
                 password: data.password,
             });
-            navigate('/app');
+            // 2. Navigate to dashboard on success.
+            navigate('/app/dashboard');
         } catch (err) {
-            console.error(err);
             setServerError(
-                'Invalid credentials or server unavailable. Please try again.',
+                err instanceof ApiError
+                    ? err.message
+                    : 'Invalid credentials or server unavailable. Please try again.',
             );
         }
     };
@@ -226,7 +231,6 @@ export function LoginPage() {
                         </Box>
                     </Box>
 
-                    {/* Right side – sign-in card */}
                     <Paper
                         sx={{
                             p: { xs: 3, md: 4 },
@@ -324,7 +328,7 @@ export function LoginPage() {
                                         <ArrowForwardRoundedIcon />
                                     ) : undefined
                                 }
-                                sx={{ mt: 1 }}
+                                sx={{ mt: 1, ...AUTH_PRIMARY_BUTTON_SX }}
                             >
                                 {isSubmitting ? 'Signing in…' : 'Sign in'}
                             </Button>

@@ -7,7 +7,6 @@ pub struct Claims {
     pub exp: usize,     // expiry Unix timestamp
 }
 
-/// Input DTO
 #[derive(Debug)]
 pub struct LoginUserCommand {
     pub email: String,

@@ -15,11 +15,7 @@
 #include <stdio.h>
 #include <errno.h>
 
-/*
- * Accounts routes. This layer only parses/serializes and forwards to
- * AccountService — every business rule (IBAN generation, type/currency
- * parsing, uniqueness, availability) lives in the service.
- */
+// Accounts routes: parse/serialize only; business rules in AccountService.
 
 // ── Serialization ──────────────────────────────────────────────────────
 
@@ -77,8 +73,8 @@ static enum MHD_Result handle_open_account(
 
     if (!account_type || !currency || !json_is_integer(bal_j)) {
         json_decref(root);
-        return http_send_json(conn, MHD_HTTP_UNPROCESSABLE_ENTITY,
-            "{\"status\":422,\"code\":\"validation_error\","
+        return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
+            "{\"status\":400,\"code\":\"validation_error\","
             "\"message\":\"account_type, currency and initial_balance_cents are required\"}");
     }
 
@@ -226,11 +222,7 @@ enum MHD_Result http_accounts_dispatch(
             char *endptr = NULL;
             errno = 0;
             long long id_ll = strtoll(id_str, &endptr, 10);
-            /* A non-numeric or out-of-range id is a malformed path parameter.
-             * axum's Path<i64> extractor rejects these with 400, so we mirror
-             * that here (previously 422). A syntactically valid i64 — including
-             * 0 or negatives — flows to the handler, which returns 404 when the
-             * account does not exist, exactly like the Rust handler. */
+            // Reject malformed id with 400 (axum Path<i64> parity).
             if (endptr == id_str || *endptr != '\0' || errno == ERANGE) {
                 return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
                     "{\"status\":400,\"code\":\"bad_request\","

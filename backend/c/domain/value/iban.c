@@ -17,9 +17,10 @@ bool iban_try_create(const char *raw, IBAN *out, DomainError *err) {
         return false;
     }
 
-    char buffer[IBAN_MAX_LEN + 1];
+    // Allow one extra char so over-length input is detected (not silently truncated).
+    char buffer[IBAN_MAX_LEN + 2];
     size_t j = 0;
-    for (size_t i = 0; raw[i] != '\0' && j < IBAN_MAX_LEN; ++i) {
+    for (size_t i = 0; raw[i] != '\0' && j <= IBAN_MAX_LEN; ++i) {
         char c = raw[i];
         if (!isspace((unsigned char)c)) {
             buffer[j++] = (char)toupper((unsigned char)c);
@@ -50,7 +51,7 @@ static uint64_t mod97_str(const char *s) {
     for (; *s; ++s) {
         char c = *s;
         if (c >= 'A' && c <= 'Z') {
-            /* 'A'→10, 'B'→11, ... 'Z'→35 — 2 digits */
+            // Letters expand to two digits (A→10 … Z→35).
             int n = (c - 'A') + 10;
             acc = (acc * 10 + (n / 10)) % 97;
             acc = (acc * 10 + (n % 10)) % 97;

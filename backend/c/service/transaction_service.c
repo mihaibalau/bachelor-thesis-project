@@ -7,20 +7,43 @@
 #include <stdio.h>
 #include <time.h>
 
-/* Cross-platform processor count — replaces POSIX-only sysconf */
 #ifdef _WIN32
 #   include <windows.h>
 #else
 #   include <unistd.h>
 #endif
 
-/*
- * The "bank" account that funds ATM deposits and receives withdrawals /
- * payments. Mirrors Rust's `const BANK_ACCOUNT_ID: AccountId = AccountId(1)`.
- */
+// System bank account for deposits/withdrawals/payments (Rust BANK_ACCOUNT_ID).
 static const AccountId BANK_ACCOUNT_ID = { 1 };
 
-/*  Adapters: DB repos -> abstract repo interfaces  (§3.3)          */
+// Sort by id, then scan-dedupe — O(n log n) vs O(n²) nested loop.
+static int compare_tx_ptr_by_id(const void *a, const void *b) {
+    const Transaction * const *ta = (const Transaction * const *)a;
+    const Transaction * const *tb = (const Transaction * const *)b;
+    int64_t ida = transaction_id(*ta).value;
+    int64_t idb = transaction_id(*tb).value;
+    if (ida < idb) return -1;
+    if (ida > idb) return 1;
+    return 0;
+}
+
+static size_t dedupe_transactions_by_id(Transaction **all_txs, size_t all_count) {
+    if (all_count <= 1) return all_count;
+
+    qsort(all_txs, all_count, sizeof(Transaction *), compare_tx_ptr_by_id);
+
+    size_t w = 1;
+    for (size_t i = 1; i < all_count; ++i) {
+        if (transaction_id(all_txs[i]).value == transaction_id(all_txs[w - 1]).value) {
+            transaction_free(all_txs[i]);
+        } else {
+            all_txs[w++] = all_txs[i];
+        }
+    }
+    return w;
+}
+
+// Repo adapters (DB -> abstract interfaces).
 
 static bool tx_repo_get_by_id_adapter(
     void *ctx, TransactionId id, Transaction **out, RepoError *err)
@@ -88,8 +111,6 @@ TxAccountRepository tx_account_repository_from_repo(AccountRepo *repo) {
     return r;
 }
 
-/*  TransactionService struct   (§3.1)                               */
-
 struct TransactionService {
     TransactionRepository tx_repo;
     TxAccountRepository   account_repo;
@@ -108,8 +129,6 @@ TransactionService *transaction_service_new(TransactionRepository tx_repo,
 void transaction_service_free(TransactionService *svc) {
     free(svc);
 }
-
-/*  Internal helpers                                                     */
 
 static void free_tx_array(Transaction **arr, size_t count) {
     if (!arr) return;
@@ -132,17 +151,18 @@ static ServiceError translate_repo_error(const RepoError *rerr,
 }
 
 static int32_t time_to_date_key(time_t t) {
-    struct tm *tm_val = gmtime(&t);
-    if (!tm_val) return 0;
-    return (int32_t)((tm_val->tm_year + 1900) * 10000
-                   + (tm_val->tm_mon  + 1)    * 100
-                   +  tm_val->tm_mday);
+    struct tm tm_val;
+#ifdef _WIN32
+    if (gmtime_s(&tm_val, &t) != 0) return 0;
+#else
+    if (!gmtime_r(&t, &tm_val)) return 0;
+#endif
+    return (int32_t)((tm_val.tm_year + 1900) * 10000
+                   + (tm_val.tm_mon  + 1)    * 100
+                   +  tm_val.tm_mday);
 }
 
-/*  Thesis (§4.3.1): Rust's std::thread::available_parallelism() wraps   */
-/*  these same OS primitives automatically.  In C we call them by hand   */
-/*  and guard the platform split with #ifdef.                             */
-
+// Cross-platform processor count (Rust available_parallelism parity).
 static long get_processor_count(void) {
 #ifdef _WIN32
     SYSTEM_INFO info;
@@ -154,8 +174,6 @@ static long get_processor_count(void) {
     return n > 0 ? n : 1;
 #endif
 }
-
-/*  DayTotalMap: C equivalent of BTreeMap<NaiveDate, i64>               */
 
 typedef struct DayTotalMap {
     DayTotal *entries;
@@ -203,17 +221,16 @@ static int compare_day_totals(const void *a, const void *b) {
     return (da->date_key > db->date_key) - (da->date_key < db->date_key);
 }
 
-/*  Worker thread shared state + args                                    */
-
 typedef struct StatsShared {
-    _Atomic int64_t   total_incoming;   /* §4.3.3 C11 atomic */
+    _Atomic int64_t   total_incoming;
     _Atomic int64_t   total_outgoing;
     _Atomic int64_t   total_volume;
+    _Atomic int64_t   transaction_count;
 
-    pthread_mutex_t   per_type_mutex;   /* §4.3.2 mutex */
+    pthread_mutex_t   per_type_mutex;
     PerTypeTotals     per_type;
 
-    pthread_mutex_t   per_day_mutex;    /* §4.3.2 mutex */
+    pthread_mutex_t   per_day_mutex;
     DayTotalMap       per_day;
 } StatsShared;
 
@@ -222,16 +239,18 @@ typedef struct StatsWorkerArgs {
     size_t        count;
     StatsShared  *shared;
 
-    /* Read-only view of the user's account ids; direction is decided relative
-     * to this set (mirrors Rust's `user_account_ids` HashSet). */
     const int64_t *user_ids;
     size_t         user_count;
 
-    /* Optional [from, to] window (mirrors Rust's Option<DateTime<Utc>>). */
     bool   has_from;
     time_t from;
     bool   has_to;
     time_t to;
+
+    bool    has_scope_account;
+    int64_t scope_account_id;
+    bool    has_tx_type;
+    TransactionType filter_type;
 } StatsWorkerArgs;
 
 static bool id_in_set(const int64_t *ids, size_t count, int64_t value) {
@@ -245,7 +264,7 @@ static void *stats_worker_fn(void *raw) {
     StatsWorkerArgs *arg = (StatsWorkerArgs *)raw;
     StatsShared     *s   = arg->shared;
 
-    /* Phase 1: thread-local accumulation — no locks in the hot path. */
+    // 1. Thread-local accumulation (no locks in hot path).
     PerTypeTotals local_type;
     memset(&local_type, 0, sizeof local_type);
 
@@ -255,26 +274,36 @@ static void *stats_worker_fn(void *raw) {
     for (size_t i = 0; i < arg->count; ++i) {
         const Transaction *tx    = arg->slice[i];
 
-        /* Restrict to the requested [from, to] window. */
         time_t rec = transaction_recorded_on(tx);
         if (arg->has_from && rec < arg->from) continue;
         if (arg->has_to   && rec > arg->to)   continue;
+
+        if (arg->has_tx_type && transaction_type_get(tx) != arg->filter_type) {
+            continue;
+        }
 
         int64_t            value = transaction_value_cents(tx);
         TransactionType    type  = transaction_type_get(tx);
         int32_t            dkey  = time_to_date_key(rec);
 
-        /* Signed effect on the user: credited when one of the user's accounts
-         * is the destination, debited when one is the source. An internal
-         * transfer between two owned accounts nets to zero. */
-        bool to_owned   = id_in_set(arg->user_ids, arg->user_count,
-                                    transaction_to_account_id(tx).value);
-        bool from_owned = id_in_set(arg->user_ids, arg->user_count,
-                                    transaction_from_account_id(tx).value);
+        bool to_owned;
+        bool from_owned;
+        if (arg->has_scope_account) {
+            to_owned   = transaction_to_account_id(tx).value == arg->scope_account_id;
+            from_owned = transaction_from_account_id(tx).value == arg->scope_account_id;
+            if (!to_owned && !from_owned) continue;
+        } else {
+            to_owned   = id_in_set(arg->user_ids, arg->user_count,
+                                   transaction_to_account_id(tx).value);
+            from_owned = id_in_set(arg->user_ids, arg->user_count,
+                                   transaction_from_account_id(tx).value);
+        }
+
         int64_t net = (to_owned ? value : 0) - (from_owned ? value : 0);
 
+        atomic_fetch_add_explicit(&s->transaction_count, 1, memory_order_relaxed);
+
         if (net > 0) {
-            /* §4.3.3: mirrors AtomicI64::fetch_add(v, Ordering::Relaxed) */
             atomic_fetch_add_explicit(&s->total_incoming, net,
                                       memory_order_relaxed);
         } else if (net < 0) {
@@ -285,20 +314,15 @@ static void *stats_worker_fn(void *raw) {
         atomic_fetch_add_explicit(&s->total_volume, net < 0 ? -net : net,
                                   memory_order_relaxed);
 
-        /* Per-type totals: gross value per type (once per unique tx). */
         if ((size_t)type < TX_SERVICE_TYPE_COUNT) {
             local_type.totals[type]  += value;
             local_type.present[type]  = true;
         }
 
-        /* Per-day totals: SIGNED net so outgoing reduces the day's total
-         * (the route derives daily spending from the negative part). */
         day_total_map_add(&local_day, dkey, net);
     }
 
-    /* Phase 2: merge under mutex — one lock acquisition per thread per map. */
-
-    /* §4.3.2: mirrors Arc<Mutex<HashMap>>::lock().unwrap() */
+    // 2. Merge thread-local maps under mutex.
     pthread_mutex_lock(&s->per_type_mutex);
     for (size_t c = 0; c < TX_SERVICE_TYPE_COUNT; ++c) {
         if (local_type.present[c]) {
@@ -320,9 +344,7 @@ static void *stats_worker_fn(void *raw) {
     return NULL;
 }
 
-/*  Comparators for statement sort                                       */
-
-/* Sort transaction pointers oldest -> newest, ties broken by id ascending. */
+// Sort transaction pointers oldest -> newest (id tie-break).
 static int compare_tx_by_recorded_on(const void *a, const void *b) {
     const Transaction *ta = *(const Transaction *const *)a;
     const Transaction *tb = *(const Transaction *const *)b;
@@ -334,7 +356,6 @@ static int compare_tx_by_recorded_on(const void *a, const void *b) {
     return (ia > ib) - (ia < ib);
 }
 
-/* Sort statement entries oldest -> newest (recorded_on, then id ascending). */
 static int compare_entry_asc(const void *a, const void *b) {
     const AccountStatementEntry *ea = (const AccountStatementEntry *)a;
     const AccountStatementEntry *eb = (const AccountStatementEntry *)b;
@@ -345,16 +366,11 @@ static int compare_entry_asc(const void *a, const void *b) {
     return (ia > ib) - (ia < ib);
 }
 
-/* Sort statement entries newest -> oldest (reverse of compare_entry_asc). */
 static int compare_entry_desc(const void *a, const void *b) {
     return compare_entry_asc(b, a);
 }
 
-/*
- * Apply a transaction's monetary effect to the affected account balances and
- * persist them. Mirrors the `match cmd.transaction_type` block in Rust's
- * record_transaction (same signs, same overdraft rule, same domain helpers).
- */
+// Apply balance changes per transaction type, then persist accounts.
 static bool record_transaction_apply_balances(
     TransactionService *svc,
     const RecordTransactionCommand *cmd,
@@ -468,8 +484,6 @@ static bool record_transaction_apply_balances(
     return true;
 }
 
-/*  Public methods                                                       */
-
 bool transaction_service_record_transaction(
     TransactionService *svc,
     const RecordTransactionCommand *cmd,
@@ -482,7 +496,7 @@ bool transaction_service_record_transaction(
         return false;
     }
 
-    /* §4.1 Type-Driven Invariants: value > 0 enforced before domain call. */
+    // 1. Reject non-positive value before domain call.
     if (cmd->value_cents <= 0) {
         if (err) *err = service_error_validation(
             "transaction value must be strictly positive");
@@ -503,15 +517,7 @@ bool transaction_service_record_transaction(
         return false;
     }
 
-    /*
-     * Apply the monetary effect to the affected account balances using the
-     * domain helpers, then persist it — mirroring Rust's record_transaction.
-     *   Deposit            -> credit destination
-     *   Withdrawal/Payment -> debit source (reject overdraft)
-     *   Send/Transfer      -> debit source AND credit destination
-     * Any operation that would overdraw the source is rejected with a
-     * validation error ("insufficient funds") before the row is written.
-     */
+    // 2. Update account balances (reject overdraft before insert).
     if (!record_transaction_apply_balances(svc, cmd, err)) {
         transaction_free(tx);
         return false;
@@ -549,7 +555,6 @@ bool transaction_service_list_for_account(
         return false;
     }
 
-    /* Mirrors Rust: limit.clamp(1, 100), offset.max(0). */
     if (limit < 1)   limit = 1;
     if (limit > 100) limit = 100;
     if (offset < 0)  offset = 0;
@@ -582,11 +587,7 @@ bool transaction_service_compute_account_statement(
 
     AccountId account_id = query->account_id;
 
-    /*
-     * 1. Load the account's CURRENT balance. It reflects every transaction ever
-     *    applied, so it anchors the running balance: opening balance is
-     *    reconstructed as `current - sum(all signed deltas)`.
-     */
+    // 1. Load current balance (anchor for running balance).
     Account  *account = NULL;
     RepoError rerr;
     if (!svc->account_repo.vtable->get_by_id(
@@ -597,12 +598,7 @@ bool transaction_service_compute_account_statement(
     int64_t current_balance = account_balance_cents(account);
     account_free(account);
 
-    /*
-     * 2. Load the FULL history (INT64_MAX limit). Date filtering and pagination
-     *    happen *after* the running-balance computation, so a date-range query
-     *    is never truncated by an early LIMIT and pagination slices the correct,
-     *    already-filtered set.
-     */
+    // 2. Load full history; filter/paginate after balance computation.
     Transaction **txs   = NULL;
     size_t        count = 0;
     if (!svc->tx_repo.vtable->list_for_account(
@@ -611,14 +607,12 @@ bool transaction_service_compute_account_statement(
         return false;
     }
 
-    /* 3. Chronological order (oldest -> newest), ties broken by id. */
+    // 3. Sort oldest -> newest.
     if (count > 1) {
         qsort(txs, count, sizeof(Transaction *), compare_tx_by_recorded_on);
     }
 
-    /* 4. Reconstruct opening balance: opening = current - sum(signed deltas).
-     *    Signed delta: credit when the account is the destination (`to`),
-     *    debit when it is the source (`from`). */
+    // 4. Reconstruct opening balance from signed deltas.
     int64_t total = 0;
     for (size_t i = 0; i < count; ++i) {
         int64_t val = transaction_value_cents(txs[i]);
@@ -627,7 +621,7 @@ bool transaction_service_compute_account_statement(
     }
     int64_t running = current_balance - total;
 
-    /* 5. Forward pass: tag every transaction with its balance-after. */
+    // 5. Forward pass: compute balance-after per entry.
     AccountStatementEntry *entries = NULL;
     if (count > 0) {
         entries = (AccountStatementEntry *)calloc(
@@ -650,7 +644,7 @@ bool transaction_service_compute_account_statement(
         entries[i].transaction_id      = transaction_id(tx);
         entries[i].recorded_on         = transaction_recorded_on(tx);
         entries[i].transaction_type    = transaction_type_get(tx);
-        entries[i].value_cents         = val;
+        entries[i].value_cents         = delta;
         entries[i].balance_after_cents = running;
 
         const char *desc = transaction_description(tx);
@@ -663,7 +657,7 @@ bool transaction_service_compute_account_statement(
 
     free_tx_array(txs, count);
 
-    /* 6. Date-range filter (compact in-place), applied before pagination. */
+    // 6. Filter by date range (in-place).
     if (query->has_from || query->has_to) {
         size_t write = 0;
         for (size_t i = 0; i < count; ++i) {
@@ -676,12 +670,7 @@ bool transaction_service_compute_account_statement(
         count = write;
     }
 
-    /*
-     * 7. Pagination mirrors the original "most recent first" semantics:
-     *    order newest -> oldest, take the requested [offset, offset+limit)
-     *    slice, then present it oldest -> newest. Each entry keeps its
-     *    absolute balance-after computed over the full history.
-     */
+    // 7. Paginate newest-first slice, return oldest-first.
     if (count > 1) {
         qsort(entries, count, sizeof(AccountStatementEntry), compare_entry_desc);
     }
@@ -733,7 +722,7 @@ bool transaction_service_compute_user_statistics(
         return false;
     }
 
-    /* Phase A: I/O — load all accounts. */
+    // 1. Load all user accounts.
     Account **accounts      = NULL;
     size_t    account_count = 0;
     RepoError rerr;
@@ -745,8 +734,6 @@ bool transaction_service_compute_user_statistics(
         return false;
     }
 
-    /* The set of account ids owned by this user. Direction (incoming vs
-     * outgoing) is decided relative to this set, not by transaction type. */
     int64_t *user_ids = NULL;
     if (account_count > 0) {
         user_ids = (int64_t *)calloc(account_count, sizeof(int64_t));
@@ -761,7 +748,7 @@ bool transaction_service_compute_user_statistics(
         }
     }
 
-    /* Phase B: I/O — gather all transactions into one flat array. */
+    // 2. Gather transactions from every account.
     Transaction **all_txs   = NULL;
     size_t        all_count = 0;
     size_t        all_cap   = 0;
@@ -803,37 +790,15 @@ bool transaction_service_compute_user_statistics(
 
         memcpy(all_txs + all_count, chunk, chunk_count * sizeof(Transaction *));
         all_count += chunk_count;
-        free(chunk);   /* free the pointer array only, not the Transactions */
+        free(chunk);
     }
 
     free_account_array(accounts, account_count);
 
-    /* DEDUPLICATE by transaction id. An internal Transfer/Send between two of
-     * the user's own accounts is returned once per side; keeping it once
-     * prevents double counting (mirrors Rust's HashMap<TransactionId, _>). */
-    {
-        size_t w = 0;
-        for (size_t i = 0; i < all_count; ++i) {
-            int64_t id  = transaction_id(all_txs[i]).value;
-            bool    dup = false;
-            for (size_t j = 0; j < w; ++j) {
-                if (transaction_id(all_txs[j]).value == id) { dup = true; break; }
-            }
-            if (dup) {
-                transaction_free(all_txs[i]);
-            } else {
-                all_txs[w++] = all_txs[i];
-            }
-        }
-        all_count = w;
-    }
+    // 3. Dedupe by transaction id (sort + scan).
+    all_count = dedupe_transactions_by_id(all_txs, all_count);
 
-    /* Phase C: CPU — parallel aggregation across all transactions.
-     *
-     * Mirrors Rust:
-     *   let num_threads = thread::available_parallelism()
-     *       .map(|n| n.get()).unwrap_or(1);
-     */
+    // 4. Parallel aggregation across worker threads.
     long   nproc       = get_processor_count();
     size_t num_threads = (nproc > 0) ? (size_t)nproc : 1;
     if (all_count > 0 && num_threads > all_count) num_threads = all_count;
@@ -842,15 +807,12 @@ bool transaction_service_compute_user_statistics(
     size_t chunk_size = all_count / num_threads;
     if (chunk_size == 0) chunk_size = 1;
 
-    /* Initialise shared state. */
-
-    /* §4.3.3: mirrors AtomicI64::new(0) */
     StatsShared shared;
     atomic_init(&shared.total_incoming, 0);
     atomic_init(&shared.total_outgoing, 0);
     atomic_init(&shared.total_volume,   0);
+    atomic_init(&shared.transaction_count, 0);
 
-    /* §4.3.2: mirrors Arc::new(Mutex::new(HashMap::new())) */
     pthread_mutex_init(&shared.per_type_mutex, NULL);
     pthread_mutex_init(&shared.per_day_mutex,  NULL);
     memset(&shared.per_type, 0, sizeof shared.per_type);
@@ -873,15 +835,7 @@ bool transaction_service_compute_user_statistics(
         return false;
     }
 
-    /*
-     * §4.3.1: spawn workers.
-     * Mirrors:
-     *   thread::scope(|scope| {
-     *       for chunk in all_transactions.chunks(chunk_size) {
-     *           scope.spawn(move || { ... });
-     *       }
-     *   });
-     */
+    // 5. Spawn workers and join.
     size_t offset = 0;
     for (size_t t = 0; t < num_threads; ++t) {
         size_t slice = (t == num_threads - 1)
@@ -897,12 +851,23 @@ bool transaction_service_compute_user_statistics(
         args[t].from       = from;
         args[t].has_to     = has_to;
         args[t].to         = to;
+        args[t].has_scope_account = false;
+        args[t].scope_account_id  = 0;
+        args[t].has_tx_type       = false;
+        args[t].filter_type       = TRANSACTION_TYPE_DEPOSIT;
 
-        pthread_create(&threads[t], NULL, stats_worker_fn, &args[t]);
+        if (pthread_create(&threads[t], NULL, stats_worker_fn, &args[t]) != 0) {
+            for (size_t j = 0; j < t; ++j) pthread_join(threads[j], NULL);
+            free(args);
+            free(threads);
+            free_tx_array(all_txs, all_count);
+            free(user_ids);
+            if (err) *err = service_error_internal("failed to spawn statistics worker thread");
+            return false;
+        }
         offset += slice;
     }
 
-    /* Join all threads — mirrors scope dropping in Rust. */
     for (size_t t = 0; t < num_threads; ++t) {
         pthread_join(threads[t], NULL);
     }
@@ -912,9 +877,7 @@ bool transaction_service_compute_user_statistics(
     free_tx_array(all_txs, all_count);
     free(user_ids);
 
-    /* Phase D: collect results. */
-
-    /* §4.3.3: mirrors AtomicI64::load(Ordering::Relaxed) */
+    // 6. Collect aggregated results.
     out->total_incoming_cents =
         atomic_load_explicit(&shared.total_incoming, memory_order_relaxed);
     out->total_outgoing_cents =
@@ -924,7 +887,6 @@ bool transaction_service_compute_user_statistics(
 
     out->per_type = shared.per_type;
 
-    /* Sort per_day — BTreeMap in Rust is always sorted; we must do this explicitly. */
     if (shared.per_day.count > 1) {
         qsort(shared.per_day.entries,
               shared.per_day.count,
@@ -932,13 +894,266 @@ bool transaction_service_compute_user_statistics(
               compare_day_totals);
     }
 
-    /* Transfer ownership of the per_day array to the caller. */
     out->per_day       = shared.per_day.entries;
     out->per_day_count = shared.per_day.count;
-    /* Do NOT call day_total_map_free — ownership transferred above. */
 
     pthread_mutex_destroy(&shared.per_type_mutex);
     pthread_mutex_destroy(&shared.per_day_mutex);
+
+    if (err) *err = service_error_ok();
+    return true;
+}
+
+static void parse_payment_category(const char *description, char *out, size_t out_sz) {
+    snprintf(out, out_sz, "Other");
+    if (!description) return;
+    const char *p = description;
+    while (*p) {
+        while (*p == ' ' || *p == '|') ++p;
+        if (strncmp(p, "category:", 9) == 0) {
+            p += 9;
+            while (*p == ' ') ++p;
+            strncpy(out, p, out_sz - 1);
+            out[out_sz - 1] = '\0';
+            char *bar = strchr(out, '|');
+            if (bar) *bar = '\0';
+            for (char *c = out + strlen(out) - 1; c >= out && *c == ' '; --c) *c = '\0';
+            if (out[0] != '\0') return;
+        }
+        const char *next = strchr(p, '|');
+        p = next ? next + 1 : p + strlen(p);
+    }
+}
+
+static bool tx_passes_filters(
+    const Transaction *tx,
+    time_t rec,
+    bool has_from, time_t from,
+    bool has_to, time_t to,
+    const StatsFilterOpts *filters,
+    const int64_t *user_ids,
+    size_t user_count)
+{
+    if (has_from && rec < from) return false;
+    if (has_to && rec > to) return false;
+    if (filters && filters->has_tx_type && transaction_type_get(tx) != filters->tx_type) {
+        return false;
+    }
+    if (filters && filters->has_scope_account) {
+        bool to_owned   = transaction_to_account_id(tx).value == filters->scope_account_id;
+        bool from_owned = transaction_from_account_id(tx).value == filters->scope_account_id;
+        if (!to_owned && !from_owned) return false;
+    }
+    (void)user_ids;
+    (void)user_count;
+    return true;
+}
+
+bool transaction_service_compute_user_statistics_extended(
+    TransactionService *svc,
+    UserId user_id,
+    int64_t per_account_limit,
+    bool has_from,
+    time_t from,
+    bool has_to,
+    time_t to,
+    const StatsFilterOpts *filters,
+    UserTransactionStatistics *out,
+    int64_t *out_tx_count,
+    PaymentCategoryTotal **out_payment_cats,
+    size_t *out_payment_cat_count,
+    ServiceError *err)
+{
+    if (!svc || !out) {
+        if (err) *err = service_error_validation(
+            "compute_user_statistics_extended: invalid arguments");
+        return false;
+    }
+
+    memset(out, 0, sizeof *out);
+
+    Account **accounts      = NULL;
+    size_t    account_count = 0;
+    RepoError rerr;
+
+    if (!svc->account_repo.vtable->list_for_user(
+            svc->account_repo.ctx, user_id, &accounts, &account_count, &rerr)) {
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    int64_t *user_ids = NULL;
+    if (account_count > 0) {
+        user_ids = (int64_t *)calloc(account_count, sizeof(int64_t));
+        if (!user_ids) {
+            free_account_array(accounts, account_count);
+            if (err) *err = service_error_internal("out of memory");
+            return false;
+        }
+        for (size_t a = 0; a < account_count; ++a) {
+            user_ids[a] = account_id(accounts[a]).value;
+        }
+    }
+
+    Transaction **all_txs = NULL;
+    size_t all_count = 0, all_cap = 0;
+
+    for (size_t a = 0; a < account_count; ++a) {
+        AccountId aid = account_id(accounts[a]);
+        Transaction **chunk = NULL;
+        size_t chunk_count = 0;
+        if (!svc->tx_repo.vtable->list_for_account(
+                svc->tx_repo.ctx, aid, per_account_limit, 0, &chunk, &chunk_count, &rerr)) {
+            free(user_ids);
+            free_account_array(accounts, account_count);
+            free_tx_array(all_txs, all_count);
+            if (err) *err = service_error_from_repo(&rerr);
+            return false;
+        }
+        if (all_count + chunk_count > all_cap) {
+            size_t new_cap = (all_cap + chunk_count) * 2;
+            if (new_cap < 16) new_cap = 16;
+            Transaction **buf = (Transaction **)realloc(all_txs, new_cap * sizeof(Transaction *));
+            if (!buf) {
+                free(chunk);
+                free(user_ids);
+                free_account_array(accounts, account_count);
+                free_tx_array(all_txs, all_count);
+                if (err) *err = service_error_internal("out of memory");
+                return false;
+            }
+            all_txs = buf;
+            all_cap = new_cap;
+        }
+        memcpy(all_txs + all_count, chunk, chunk_count * sizeof(Transaction *));
+        all_count += chunk_count;
+        free(chunk);
+    }
+    free_account_array(accounts, account_count);
+
+    all_count = dedupe_transactions_by_id(all_txs, all_count);
+
+    StatsShared shared;
+    atomic_init(&shared.total_incoming, 0);
+    atomic_init(&shared.total_outgoing, 0);
+    atomic_init(&shared.total_volume, 0);
+    atomic_init(&shared.transaction_count, 0);
+    pthread_mutex_init(&shared.per_type_mutex, NULL);
+    pthread_mutex_init(&shared.per_day_mutex, NULL);
+    memset(&shared.per_type, 0, sizeof shared.per_type);
+    day_total_map_init(&shared.per_day);
+
+    long nproc = get_processor_count();
+    size_t num_threads = (nproc > 0) ? (size_t)nproc : 1;
+    if (all_count > 0 && num_threads > all_count) num_threads = all_count;
+    if (num_threads == 0) num_threads = 1;
+    size_t chunk_size = all_count / num_threads;
+    if (chunk_size == 0) chunk_size = 1;
+
+    StatsWorkerArgs *args = (StatsWorkerArgs *)calloc(num_threads, sizeof *args);
+    pthread_t *threads = (pthread_t *)calloc(num_threads, sizeof *threads);
+    if (!args || !threads) {
+        free(args); free(threads);
+        pthread_mutex_destroy(&shared.per_type_mutex);
+        pthread_mutex_destroy(&shared.per_day_mutex);
+        day_total_map_free(&shared.per_day);
+        free_tx_array(all_txs, all_count);
+        free(user_ids);
+        if (err) *err = service_error_internal("out of memory");
+        return false;
+    }
+
+    size_t offset = 0;
+    for (size_t t = 0; t < num_threads; ++t) {
+        size_t slice = (t == num_threads - 1) ? (all_count - offset) : chunk_size;
+        args[t].slice = all_txs + offset;
+        args[t].count = slice;
+        args[t].shared = &shared;
+        args[t].user_ids = user_ids;
+        args[t].user_count = account_count;
+        args[t].has_from = has_from;
+        args[t].from = from;
+        args[t].has_to = has_to;
+        args[t].to = to;
+        args[t].has_scope_account = filters && filters->has_scope_account;
+        args[t].scope_account_id  = filters ? filters->scope_account_id : 0;
+        args[t].has_tx_type       = filters && filters->has_tx_type;
+        args[t].filter_type       = filters ? filters->tx_type : TRANSACTION_TYPE_DEPOSIT;
+        if (pthread_create(&threads[t], NULL, stats_worker_fn, &args[t]) != 0) {
+            for (size_t j = 0; j < t; ++j) pthread_join(threads[j], NULL);
+            free(args);
+            free(threads);
+            free_tx_array(all_txs, all_count);
+            free(user_ids);
+            if (err) *err = service_error_internal("failed to spawn statistics worker thread");
+            return false;
+        }
+        offset += slice;
+    }
+    for (size_t t = 0; t < num_threads; ++t) pthread_join(threads[t], NULL);
+    free(args);
+    free(threads);
+
+    out->total_incoming_cents = atomic_load_explicit(&shared.total_incoming, memory_order_relaxed);
+    out->total_outgoing_cents = atomic_load_explicit(&shared.total_outgoing, memory_order_relaxed);
+    out->total_volume_cents   = atomic_load_explicit(&shared.total_volume, memory_order_relaxed);
+    out->per_type = shared.per_type;
+    if (shared.per_day.count > 1) {
+        qsort(shared.per_day.entries, shared.per_day.count, sizeof(DayTotal), compare_day_totals);
+    }
+    out->per_day = shared.per_day.entries;
+    out->per_day_count = shared.per_day.count;
+
+    if (out_tx_count) {
+        *out_tx_count = atomic_load_explicit(&shared.transaction_count, memory_order_relaxed);
+    }
+
+    if (out_payment_cats && out_payment_cat_count) {
+        PaymentCategoryTotal *cats = NULL;
+        size_t cat_count = 0, cat_cap = 0;
+        for (size_t i = 0; i < all_count; ++i) {
+            const Transaction *tx = all_txs[i];
+            time_t rec = transaction_recorded_on(tx);
+            if (!tx_passes_filters(tx, rec, has_from, from, has_to, to, filters, user_ids, account_count)) {
+                continue;
+            }
+            if (transaction_type_get(tx) != TRANSACTION_TYPE_PAYMENT) continue;
+
+            char category[64];
+            parse_payment_category(transaction_description(tx), category, sizeof category);
+            int64_t value = transaction_value_cents(tx);
+
+            size_t found = cat_count;
+            for (size_t c = 0; c < cat_count; ++c) {
+                if (strcmp(cats[c].category, category) == 0) {
+                    cats[c].total_cents += value;
+                    found = c;
+                    break;
+                }
+            }
+            if (found < cat_count) continue;
+
+            if (cat_count >= cat_cap) {
+                size_t new_cap = cat_cap ? cat_cap * 2 : 8;
+                PaymentCategoryTotal *buf = (PaymentCategoryTotal *)realloc(
+                    cats, new_cap * sizeof(PaymentCategoryTotal));
+                if (!buf) break;
+                cats = buf;
+                cat_cap = new_cap;
+            }
+            strncpy(cats[cat_count].category, category, sizeof cats[cat_count].category - 1);
+            cats[cat_count].category[sizeof cats[cat_count].category - 1] = '\0';
+            cats[cat_count].total_cents = value;
+            cat_count++;
+        }
+        *out_payment_cats = cats;
+        *out_payment_cat_count = cat_count;
+    }
+
+    pthread_mutex_destroy(&shared.per_type_mutex);
+    pthread_mutex_destroy(&shared.per_day_mutex);
+    free_tx_array(all_txs, all_count);
+    free(user_ids);
 
     if (err) *err = service_error_ok();
     return true;
@@ -951,13 +1166,7 @@ void user_transaction_statistics_free(UserTransactionStatistics *stats) {
     stats->per_day_count = 0;
 }
 
-/*  User-facing use-cases (business logic; never in the server layer)    */
-
-/*
- * ensure_account_owned_by: load the account and confirm it belongs to the
- * given user. A missing account or a mismatch both map to NotFound("account"),
- * exactly like Rust's `ensure_account_owned_by`.
- */
+// Verify account exists and belongs to user (NotFound on mismatch).
 static bool ensure_account_owned_by(
     TransactionService *svc,
     UserId user_id,
@@ -985,12 +1194,9 @@ static bool ensure_account_owned_by(
     return true;
 }
 
-/* Convert a civil UTC date+time to time_t without relying on timegm/_mkgmtime
- * (portable across MSYS2 / Windows). Uses the well-known days-from-civil
- * algorithm so the [from, to] bounds match Rust's UTC interpretation. */
+// Civil UTC -> time_t (portable; matches Rust UTC bounds).
 static time_t utc_civil_to_time(int year, int month, int day,
                                 int hour, int min, int sec) {
-    /* days_from_civil (Howard Hinnant's algorithm) */
     int y = year;
     y -= (month <= 2);
     int era = (y >= 0 ? y : y - 399) / 400;
@@ -1001,7 +1207,6 @@ static time_t utc_civil_to_time(int year, int month, int day,
     return (time_t)(days * 86400 + hour * 3600 + min * 60 + sec);
 }
 
-/* Parse "YYYY-MM-DD"; on success fill the date fields. */
 static bool parse_ymd(const char *s, int *y, int *m, int *d) {
     if (!s) return false;
     return sscanf(s, "%d-%d-%d", y, m, d) == 3;
@@ -1083,7 +1288,6 @@ static bool record_send(TransactionService *svc, AccountId from_account_id,
         return false;
     }
 
-    /* description = "Send: {trimmed message}" */
     char desc[256];
     const char *m = message ? message : "";
     while (*m == ' ' || *m == '\t' || *m == '\n' || *m == '\r') ++m;
@@ -1158,7 +1362,6 @@ static bool record_transfer(TransactionService *svc, AccountId from_account_id,
     return transaction_service_record_transaction(svc, &cmd, out_id, err);
 }
 
-/* Trim helper into a fixed buffer. */
 static void trim_into(char *dst, size_t dst_size, const char *src) {
     const char *s = src ? src : "";
     while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') ++s;
@@ -1277,7 +1480,8 @@ bool transaction_service_record_payment_for_user(
 
 bool transaction_service_list_recent_for_user(
     TransactionService *svc, UserId user_id, AccountId account_id,
-    int64_t limit, Transaction ***out_txs, size_t *out_count, ServiceError *err)
+    int64_t limit, int64_t offset,
+    Transaction ***out_txs, size_t *out_count, ServiceError *err)
 {
     if (!svc || !out_txs || !out_count) {
         if (err) *err = service_error_validation("list_recent_for_user: invalid arguments");
@@ -1285,12 +1489,12 @@ bool transaction_service_list_recent_for_user(
     }
     if (!ensure_account_owned_by(svc, user_id, account_id, err)) return false;
 
-    /* Mirrors Rust: limit.unwrap_or(10).max(1). */
     if (limit <= 0) limit = 10;
     if (limit < 1)  limit = 1;
+    if (offset < 0) offset = 0;
 
     return transaction_service_list_for_account(
-        svc, account_id, limit, 0, out_txs, out_count, err);
+        svc, account_id, limit, offset, out_txs, out_count, err);
 }
 
 bool transaction_service_compute_account_statement_for_user_from_strings(

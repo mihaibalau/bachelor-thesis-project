@@ -8,6 +8,7 @@ struct Db {
 };
 
 bool db_connect(const char *conninfo, Db **out, RepoError *err) {
+    // 1. Allocate Db and connect via libpq.
     if (!conninfo || !out) {
         if (err) *err = repo_error_db("Db: invalid arguments");
         return false;
@@ -62,11 +63,11 @@ PGresult *db_exec_params(
         db->conn,
         sql,
         n_params,
-        NULL,                /* param types: infer from text */
+        NULL,
         param_values,
-        NULL,                /* param lengths: all text */
-        NULL,                /* param formats: all text */
-        0                    /* result format: text */
+        NULL,
+        NULL,
+        0
     );
 
     if (!res) {

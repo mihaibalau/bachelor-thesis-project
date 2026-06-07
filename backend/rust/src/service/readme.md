@@ -325,9 +325,9 @@ Transaction recording, **balance updates**, statements, and analytics.
 - `pub async fn record_payment_for_user(&self, user_id, from, amount_units, category, merchant, note) -> ServiceResult<TransactionId>`
   - Each calls `ensure_account_owned_by` first, then the matching `record_*` method.
 
-- `pub async fn list_recent_for_user(&self, user_id, account_id, limit: Option<i64>) -> ServiceResult<Vec<Transaction>>`
+- `pub async fn list_recent_for_user(&self, user_id, account_id, limit: Option<i64>, offset: Option<i64>) -> ServiceResult<Vec<Transaction>>`
   - Purpose: Dashboard widget — latest transactions for one owned account.
-  - Behaviour: Default limit 10, minimum 1; delegates to `list_for_account`.
+  - Behaviour: Default limit 10, minimum 1; default offset 0; delegates to `list_for_account`.
 
 - `pub async fn compute_account_statement_for_user_from_strings(&self, user_id, account_id, from_str, to_str, limit, offset) -> ServiceResult<Vec<AccountStatementEntry>>`
   - Purpose: HTTP-friendly statement entry point.
@@ -380,7 +380,7 @@ Composes affiliate, account, and user repositories.
 - `PaginatedAffiliatesView` – `items`, `page`, `page_size`, `total`
 - `ResolveAffiliateCurrencyOptionView` – `currency`, `recipient_sub_account_id`
 - `ResolvedAffiliateTargetView` – `recipient_user_id`, `recipient_full_name`, `currencies`
-- `ListAffiliatesParams` – optional `page`, `page_size`, `search`, `currency`, `sort`
+- `ListAffiliatesParams` – optional `page`, `page_size`, `search`, `currency`, `for_send_currency`, `sort`
 
 ### Methods
 

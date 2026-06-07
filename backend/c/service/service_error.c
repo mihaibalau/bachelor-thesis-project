@@ -1,4 +1,5 @@
 #include "include/service_error.h"
+#include "../util/include/log.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -42,7 +43,6 @@ ServiceError service_error_conflict(const char *entity, const char *reason) {
 
     char buf[SERVICE_ERROR_MESSAGE_MAX];
     if (reason) {
-        /* Mirrors Rust ApiError formatting: "{entity} conflict: {message}". */
         snprintf(buf, sizeof buf, "%s conflict: %s", entity ? entity : "conflict", reason);
     } else {
         snprintf(buf, sizeof buf, "%s conflict", entity ? entity : "conflict");
@@ -91,6 +91,7 @@ ServiceError service_error_from_repo(const RepoError *rerr) {
     default:
         err.code = SERVICE_ERROR_REPO;
         service_error_set_msg(&err, rerr->message);
+        LOG_ERROR("repo_error", "%s", rerr->message ? rerr->message : "database error");
         break;
     }
     return err;

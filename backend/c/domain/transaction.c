@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Concrete representation, hidden. */
 struct Transaction {
     bool has_id;
     TransactionId id;
@@ -69,6 +68,7 @@ static bool transaction_init(
     Transaction *out,
     DomainError *err
 ) {
+    // 1. Validate value, distinct accounts, non-empty description.
     if (!out) {
         if (err) *err = domain_error_validation("Transaction is null");
         return false;
@@ -111,8 +111,6 @@ static Transaction *transaction_new_object(DomainError *err) {
     }
     return t;
 }
-
-/* Public API */
 
 Transaction *transaction_create(
     AccountId from_account_id,
@@ -162,8 +160,6 @@ Transaction *transaction_rehydrate(
 
     return t;
 }
-
-/* Getters */
 
 bool transaction_has_id(const Transaction *t) {
     assert(t);
@@ -215,8 +211,6 @@ void transaction_set_id_after_insert(Transaction *t, TransactionId id) {
     t->has_id = true;
     t->id = id;
 }
-
-/* Destructor */
 
 void transaction_free(Transaction *t) {
     free(t);

@@ -28,7 +28,6 @@ impl UserRepo {
     }
 
     pub async fn get_by_id(&self, user_id: i64) -> Result<User, RepoError> {
-
         let row = sqlx::query_as!(
             UserRow,
             r#"
@@ -41,14 +40,12 @@ impl UserRepo {
             .fetch_optional(self.db.pool())
             .await?;
 
+        // 1. Map missing row to NotFound, then rehydrate domain entity
         let row = row.ok_or_else(|| RepoError::not_found("user"))?;
-
-        let user = User::try_from(row)?;
-        Ok(user)
+        Ok(User::try_from(row)?)
     }
 
     pub async fn get_by_email(&self, email: &str) -> Result<User, RepoError> {
-
         let row = sqlx::query_as!(
             UserRow,
             r#"
@@ -62,14 +59,10 @@ impl UserRepo {
             .await?;
 
         let row = row.ok_or_else(|| RepoError::not_found("user"))?;
-
-        let user = User::try_from(row)?;
-        Ok(user)
+        Ok(User::try_from(row)?)
     }
 
-
     pub async fn get_by_tag(&self, tag: &str) -> Result<User, RepoError> {
-
         let row = sqlx::query_as!(
             UserRow,
             r#"
@@ -83,20 +76,20 @@ impl UserRepo {
             .await?;
 
         let row = row.ok_or_else(|| RepoError::not_found("user"))?;
-
-        let user = User::try_from(row)?;
-        Ok(user)
+        Ok(User::try_from(row)?)
     }
 
     pub async fn insert(&self, user: &User) -> Result<UserId, RepoError> {
-
         debug!("inserting user into DB");
+
+        // 1. Only persist users without an assigned id
         if user.id().is_some() {
             return Err(RepoError::from(DomainError::validation(
                 "Cannot insert a User that already has an id",
             )));
         }
 
+        // 2. Insert and return generated id
         let rec = sqlx::query!(
             r#"
             INSERT INTO users (tag, email, first_name, last_name, phone, birth_date, password_hash)
@@ -118,12 +111,14 @@ impl UserRepo {
     }
 
     pub async fn update(&self, user: &User) -> Result<(), RepoError> {
+        // 1. Require a persisted id before updating
         let id = user.id().ok_or_else(|| {
             RepoError::from(DomainError::validation(
                 "Cannot update a User without an id",
             ))
         })?;
 
+        // 2. Apply changes; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
             UPDATE users
@@ -156,6 +151,7 @@ impl UserRepo {
     }
 
     pub async fn delete(&self, user_id: UserId) -> Result<(), RepoError> {
+        // 1. Delete by id; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
             DELETE FROM users
@@ -178,7 +174,7 @@ impl TryFrom<UserRow> for User {
     type Error = DomainError;
 
     fn try_from(row: UserRow) -> Result<Self, Self::Error> {
-
+        // 1. Parse email value object, then rehydrate with DB id
         let id = UserId(row.id);
         let email: Email = row.email.parse()?;
 
