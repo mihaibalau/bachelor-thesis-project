@@ -7,6 +7,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use tokio::task;
 use crate::db::errors::RepoError;
 use crate::db::transaction_repo::TransactionRepo;
+use crate::domain::account::Account;
 use crate::domain::ids::{AccountId, TransactionId, UserId};
 use crate::domain::transaction::Transaction;
 use crate::domain::value::transaction_type::TransactionType;
@@ -20,6 +21,12 @@ const BANK_ACCOUNT_ID: AccountId = AccountId(1);
 pub trait TransactionRepository: Send + Sync {
     async fn get_by_id(&self, transaction_id: TransactionId) -> Result<Transaction, RepoError>;
     async fn insert(&self, tx: &Transaction) -> Result<TransactionId, RepoError>;
+    // Persist balance updates and the new transaction row in one DB transaction.
+    async fn record_atomic(
+        &self,
+        updated_accounts: &[Account],
+        tx: &Transaction,
+    ) -> Result<TransactionId, RepoError>;
     async fn list_for_account(&self, account_id: AccountId, limit: i64, offset: i64)
             -> Result<Vec<Transaction>, RepoError>;
 }
@@ -33,6 +40,14 @@ impl TransactionRepository for TransactionRepo {
 
     async fn insert(&self, tx: &Transaction) -> Result<TransactionId, RepoError> {
         self.insert(tx).await
+    }
+
+    async fn record_atomic(
+        &self,
+        updated_accounts: &[Account],
+        tx: &Transaction,
+    ) -> Result<TransactionId, RepoError> {
+        self.record_atomic(updated_accounts, tx).await
     }
 
     async fn list_for_account(&self, account_id: AccountId, limit: i64, offset: i64) -> Result<Vec<Transaction>, RepoError> {
@@ -56,6 +71,16 @@ pub struct AccountStatementQuery {
     pub to: Option<DateTime<Utc>>,
     pub limit: i64,
     pub offset: i64,
+    pub transaction_type: Option<TransactionType>,
+    pub sort_newest_first: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountStatementResult {
+    pub items: Vec<AccountStatementEntry>,
+    pub total_count: i64,
+    pub opening_balance_cents: Option<i64>,
+    pub closing_balance_cents: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,27 +210,54 @@ where
         account_id: AccountId,
         from: Option<String>,
         to: Option<String>,
+        transaction_type: Option<String>,
+        sort: Option<String>,
         limit: Option<i64>,
         offset: Option<i64>,
-    ) -> ServiceResult<Vec<AccountStatementEntry>> {
+    ) -> ServiceResult<AccountStatementResult> {
         use chrono::NaiveDate;
         use chrono::Utc;
+        use core::str::FromStr;
+
         self.ensure_account_owned_by(user_id, account_id).await?;
         let from_dt = match from.as_ref() {
             Some(s) => Some(NaiveDate::parse_from_str(s, "%Y-%m-%d")
                 .map_err(|e| ServiceError::Validation(e.to_string()))?
-                .and_hms_opt(0,0,0).unwrap()
-                .and_local_timezone(Utc).unwrap()),
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_local_timezone(Utc)
+                .unwrap()),
             None => None,
         };
         let to_dt = match to.as_ref() {
             Some(s) => Some(NaiveDate::parse_from_str(s, "%Y-%m-%d")
                 .map_err(|e| ServiceError::Validation(e.to_string()))?
-                .and_hms_opt(23,59,59).unwrap()
-                .and_local_timezone(Utc).unwrap()),
+                .and_hms_opt(23, 59, 59)
+                .unwrap()
+                .and_local_timezone(Utc)
+                .unwrap()),
             None => None,
         };
-        let query = AccountStatementQuery { account_id, from: from_dt, to: to_dt, limit: limit.unwrap_or(100), offset: offset.unwrap_or(0) };
+
+        let tx_type_filter = match transaction_type.as_deref() {
+            None | Some("All") | Some("") => None,
+            Some(raw) => Some(
+                TransactionType::from_str(raw)
+                    .map_err(|_| ServiceError::Validation("invalid transaction_type".to_string()))?,
+            ),
+        };
+
+        let sort_newest_first = matches!(sort.as_deref(), Some("newest"));
+
+        let query = AccountStatementQuery {
+            account_id,
+            from: from_dt,
+            to: to_dt,
+            limit: limit.unwrap_or(100),
+            offset: offset.unwrap_or(0),
+            transaction_type: tx_type_filter,
+            sort_newest_first,
+        };
         self.compute_account_statement(query).await
     }
 
@@ -232,12 +284,13 @@ where
             cmd.description,
         )?;
 
-        // 2. Apply balance effect and persist updated accounts
+        // 2. Apply balance effect, collecting the accounts to persist
+        let mut updated_accounts: Vec<Account> = Vec::new();
         match cmd.transaction_type {
             TransactionType::Deposit => {
                 let mut to_acc = self.account_repo.get_by_id(cmd.to_account_id).await?;
                 to_acc.credit(cmd.value_cents)?;
-                self.account_repo.update(&to_acc).await?;
+                updated_accounts.push(to_acc);
             }
             TransactionType::Withdrawal | TransactionType::Payment => {
                 let mut from_acc = self.account_repo.get_by_id(cmd.from_account_id).await?;
@@ -245,7 +298,7 @@ where
                     return Err(ServiceError::Validation("insufficient funds".into()));
                 }
                 from_acc.debit(cmd.value_cents)?;
-                self.account_repo.update(&from_acc).await?;
+                updated_accounts.push(from_acc);
             }
             TransactionType::Send | TransactionType::Transfer => {
                 let mut from_acc = self.account_repo.get_by_id(cmd.from_account_id).await?;
@@ -255,13 +308,13 @@ where
                 }
                 from_acc.debit(cmd.value_cents)?;
                 to_acc.credit(cmd.value_cents)?;
-                self.account_repo.update(&from_acc).await?;
-                self.account_repo.update(&to_acc).await?;
+                updated_accounts.push(from_acc);
+                updated_accounts.push(to_acc);
             }
         }
 
-        // 3. Persist transaction row
-        let id = self.tx_repo.insert(&tx).await?;
+        // 3. Persist balance updates and the transaction row atomically
+        let id = self.tx_repo.record_atomic(&updated_accounts, &tx).await?;
         Ok(id)
     }
 
@@ -276,7 +329,7 @@ where
     }
 
     pub async fn compute_account_statement(&self, query: AccountStatementQuery)
-        -> ServiceResult<Vec<AccountStatementEntry>> {
+        -> ServiceResult<AccountStatementResult> {
 
         let account_id = query.account_id;
 
@@ -290,6 +343,8 @@ where
         let to = query.to;
         let offset = query.offset.max(0);
         let limit = query.limit;
+        let tx_type_filter = query.transaction_type;
+        let sort_newest_first = query.sort_newest_first;
 
         // 2. Sort, compute running balances, filter and paginate (CPU-heavy → blocking thread)
         let handle = task::spawn_blocking(move || {
@@ -328,7 +383,7 @@ where
                 });
             }
 
-            // Date filter, then paginate (newest-first slice, returned oldest-first)
+            // Date filter
             let mut filtered: Vec<AccountStatementEntry> = rows
                 .into_iter()
                 .filter(|e| {
@@ -337,29 +392,58 @@ where
                 })
                 .collect();
 
-            filtered.sort_by(|a, b| {
-                b.recorded_on
-                    .cmp(&a.recorded_on)
-                    .then_with(|| b.transaction_id.0.cmp(&a.transaction_id.0))
-            });
+            // Optional transaction-type filter
+            if let Some(tx_type) = tx_type_filter {
+                filtered.retain(|e| e.transaction_type == tx_type);
+            }
+
+            let total_count = filtered.len() as i64;
+
+            let (opening_balance_cents, closing_balance_cents) = if filtered.is_empty() {
+                (None, None)
+            } else {
+                let mut asc = filtered.clone();
+                asc.sort_by(|a, b| {
+                    a.recorded_on
+                        .cmp(&b.recorded_on)
+                        .then_with(|| a.transaction_id.0.cmp(&b.transaction_id.0))
+                });
+                let first = &asc[0];
+                let last = asc.last().unwrap();
+                (
+                    Some(first.balance_after_cents - first.value_cents),
+                    Some(last.balance_after_cents),
+                )
+            };
+
+            if sort_newest_first {
+                filtered.sort_by(|a, b| {
+                    b.recorded_on
+                        .cmp(&a.recorded_on)
+                        .then_with(|| b.transaction_id.0.cmp(&a.transaction_id.0))
+                });
+            } else {
+                filtered.sort_by(|a, b| {
+                    a.recorded_on
+                        .cmp(&b.recorded_on)
+                        .then_with(|| a.transaction_id.0.cmp(&b.transaction_id.0))
+                });
+            }
 
             let off = offset as usize;
             let lim = if limit < 0 { 0usize } else { limit as usize };
-
-            let mut page: Vec<AccountStatementEntry> =
+            let page: Vec<AccountStatementEntry> =
                 filtered.into_iter().skip(off).take(lim).collect();
 
-            page.sort_by(|a, b| {
-                a.recorded_on
-                    .cmp(&b.recorded_on)
-                    .then_with(|| a.transaction_id.0.cmp(&b.transaction_id.0))
-            });
-
-            page
+            AccountStatementResult {
+                items: page,
+                total_count,
+                opening_balance_cents,
+                closing_balance_cents,
+            }
         });
 
-        let entries = handle.await.map_err(|e| ServiceError::Concurrency(format!("join error: {e}")))?;
-        Ok(entries)
+        handle.await.map_err(|e| ServiceError::Concurrency(format!("join error: {e}")))
     }
 
     pub async fn compute_user_statistics(

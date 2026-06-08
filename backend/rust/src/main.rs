@@ -16,9 +16,15 @@ use crate::{
     },
     server::{
         router::create_router,
-        state::{AppState, UserSvc, AccountSvc, TxSvc, AffiliateSvc},
+        state::{AppState, UserSvc, AccountSvc, TxSvc, AffiliateSvc, DashboardSvc},
     },
-    service::{user::UserService, account::AccountService, transaction::TransactionService, affiliate::AffiliateService},
+    service::{
+        user::UserService,
+        account::AccountService,
+        transaction::TransactionService,
+        affiliate::AffiliateService,
+        dashboard::DashboardService,
+    },
 };
 
 #[tokio::main]
@@ -57,15 +63,24 @@ async fn main() -> anyhow::Result<()> {
         account_repo.clone(),
         user_repo.clone(),
     ));
+    let dashboard_svc: Arc<DashboardSvc> = Arc::new(DashboardService::new(
+        user_svc.clone(),
+        tx_svc.clone(),
+        affiliate_svc.clone(),
+    ));
 
     // 5. AppState + router
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    if jwt_secret.len() < 32 {
+        anyhow::bail!("JWT_SECRET must be at least 32 bytes long");
+    }
 
     let state = Arc::new(AppState::new(
         user_svc,
         account_svc,
         tx_svc,
         affiliate_svc,
+        dashboard_svc,
         jwt_secret,
     ));
     let app: Router = create_router(state);

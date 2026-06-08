@@ -39,6 +39,11 @@ typedef struct TransactionRepositoryVTable {
         size_t *out_count,
         RepoError *err);
 
+    // Transaction control on the shared DB connection (atomic multi-step writes).
+    bool (*begin)(void *ctx, RepoError *err);
+    bool (*commit)(void *ctx, RepoError *err);
+    bool (*rollback)(void *ctx);
+
 } TransactionRepositoryVTable;
 
 typedef struct TransactionRepository {
@@ -95,16 +100,32 @@ typedef struct AccountStatementQuery {
     time_t    to;
     int64_t   limit;
     int64_t   offset;
+    bool      has_tx_type;
+    TransactionType tx_type;
+    bool      sort_newest_first;
 } AccountStatementQuery;
 
 typedef struct AccountStatementEntry {
     TransactionId   transaction_id;
     time_t          recorded_on;
+    long            recorded_on_micros;
     char            description[256];
     TransactionType transaction_type;
     int64_t         value_cents;
     int64_t         balance_after_cents;
 } AccountStatementEntry;
+
+typedef struct AccountStatementResult {
+    AccountStatementEntry *items;
+    size_t item_count;
+    int64_t total_count;
+    bool has_opening;
+    int64_t opening_balance_cents;
+    bool has_closing;
+    int64_t closing_balance_cents;
+} AccountStatementResult;
+
+void account_statement_result_free(AccountStatementResult *result);
 
 // Daily aggregate; date_key is YYYYMMDD for sorting.
 typedef struct DayTotal {
@@ -166,12 +187,11 @@ bool transaction_service_list_for_account(
     ServiceError *err
 );
 
-// Statement with running balance; optional date filter; caller frees entries.
+// Statement with running balance; optional date/type filter; caller frees result.
 bool transaction_service_compute_account_statement(
     TransactionService *svc,
     const AccountStatementQuery *query,
-    AccountStatementEntry **out_entries,
-    size_t *out_count,
+    AccountStatementResult *out,
     ServiceError *err
 );
 
@@ -271,17 +291,18 @@ bool transaction_service_list_recent_for_user(
     ServiceError *err
 );
 
-// Statement with optional YYYY-MM-DD bounds; caller frees entries.
+// Statement with optional YYYY-MM-DD bounds; caller frees result.
 bool transaction_service_compute_account_statement_for_user_from_strings(
     TransactionService *svc,
     UserId user_id,
     AccountId account_id,
     const char *from_opt,
     const char *to_opt,
+    const char *transaction_type_opt,
+    const char *sort_opt,
     int64_t limit,
     int64_t offset,
-    AccountStatementEntry **out_entries,
-    size_t *out_count,
+    AccountStatementResult *out,
     ServiceError *err
 );
 

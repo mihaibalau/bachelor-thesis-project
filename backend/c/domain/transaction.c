@@ -18,6 +18,7 @@ struct Transaction {
     int64_t value_cents;
 
     time_t recorded_on;
+    long   recorded_on_micros;   /* sub-second component, 0..999999 */
     char description[256];
 };
 
@@ -63,6 +64,7 @@ static bool transaction_init(
     TransactionType transaction_type,
     int64_t value_cents,
     time_t recorded_on_opt,
+    long recorded_on_micros_opt,
     bool has_recorded_on,
     const char *description,
     Transaction *out,
@@ -92,7 +94,22 @@ static bool transaction_init(
     tmp.to_account_id = to_account_id;
     tmp.transaction_type = transaction_type;
     tmp.value_cents = value_cents;
-    tmp.recorded_on = has_recorded_on ? recorded_on_opt : time(NULL);
+    if (has_recorded_on) {
+        // Rehydrating an existing row: keep the stored full-precision timestamp.
+        tmp.recorded_on        = recorded_on_opt;
+        tmp.recorded_on_micros = recorded_on_micros_opt;
+    } else {
+        // New transaction: capture wall-clock time with microsecond precision
+        // (parity with Rust's Utc::now()).
+        struct timespec ts;
+        if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
+            tmp.recorded_on        = ts.tv_sec;
+            tmp.recorded_on_micros = ts.tv_nsec / 1000;
+        } else {
+            tmp.recorded_on        = time(NULL);
+            tmp.recorded_on_micros = 0;
+        }
+    }
 
     if (!normalize_required_str(description, "Description",
                                 tmp.description, sizeof(tmp.description), err)) {
@@ -127,7 +144,7 @@ Transaction *transaction_create(
     }
 
     if (!transaction_init(false, dummy, from_account_id, to_account_id,
-                          transaction_type, value_cents, 0, false,
+                          transaction_type, value_cents, 0, 0, false,
                           description, t, err)) {
         free(t);
         return NULL;
@@ -143,6 +160,7 @@ Transaction *transaction_rehydrate(
     TransactionType transaction_type,
     int64_t value_cents,
     time_t recorded_on,
+    long recorded_on_micros,
     const char *description,
     DomainError *err
 ) {
@@ -152,7 +170,8 @@ Transaction *transaction_rehydrate(
     }
 
     if (!transaction_init(true, id, from_account_id, to_account_id,
-                          transaction_type, value_cents, recorded_on, true,
+                          transaction_type, value_cents, recorded_on,
+                          recorded_on_micros, true,
                           description, t, err)) {
         free(t);
         return NULL;
@@ -199,6 +218,11 @@ int64_t transaction_value_cents(const Transaction *t) {
 time_t transaction_recorded_on(const Transaction *t) {
     assert(t);
     return t->recorded_on;
+}
+
+long transaction_recorded_on_micros(const Transaction *t) {
+    assert(t);
+    return t->recorded_on_micros;
 }
 
 const char *transaction_description(const Transaction *t) {

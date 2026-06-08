@@ -37,7 +37,12 @@ enum MHD_Result http_request_handler(
         LOG_INFO("http_request", "method=%s path=%s", method, url);
     }
 
-    // 2. Match route group and delegate to sub-dispatcher.
+    // 2. Unauthenticated health probe (outside the /api group) for load balancers.
+    if (strcmp(url, "/health") == 0 && strcmp(method, "GET") == 0) {
+        return http_send_json(connection, MHD_HTTP_OK, "{\"status\":\"ok\"}");
+    }
+
+    // 3. Match route group and delegate to sub-dispatcher.
     const char *subpath;
 
     if ((subpath = match_prefix(url, "/api/users")) != NULL) {

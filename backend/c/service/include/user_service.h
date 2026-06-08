@@ -63,6 +63,11 @@ typedef struct UserRepositoryVTable {
         void *ctx,
         UserId id,
         RepoError *err);
+
+    /* Transaction control on the shared DB connection (atomic registration). */
+    bool (*begin)(void *ctx, RepoError *err);
+    bool (*commit)(void *ctx, RepoError *err);
+    bool (*rollback)(void *ctx);
 } UserRepositoryVTable;
 
 typedef struct UserRepository {

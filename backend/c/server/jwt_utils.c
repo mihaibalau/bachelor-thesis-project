@@ -183,9 +183,14 @@ bool jwt_decode_user_id(
         return false;
     }
 
-    // 5. Check exp
+    // 5. Check exp (required + must not be expired, matching Rust default validation)
     json_t *exp_j = json_object_get(root, "exp");
-    if (exp_j && json_is_integer(exp_j)) {
+    if (!exp_j || !json_is_integer(exp_j)) {
+        json_decref(root);
+        if (err) *err = service_error_validation("JWT missing 'exp' claim");
+        return false;
+    }
+    {
         time_t exp = (time_t)json_integer_value(exp_j);
         if (exp < time(NULL)) {
             json_decref(root);
@@ -194,7 +199,15 @@ bool jwt_decode_user_id(
         }
     }
 
-    // 6. Extract sub
+    // 6. Require 'tag' claim (Rust Claims deserialization requires it to be present)
+    json_t *tag_j = json_object_get(root, "tag");
+    if (!tag_j || !json_is_string(tag_j)) {
+        json_decref(root);
+        if (err) *err = service_error_validation("JWT missing 'tag' claim");
+        return false;
+    }
+
+    // 7. Extract sub
     json_t *sub_j = json_object_get(root, "sub");
     if (!sub_j || !json_is_integer(sub_j)) {
         json_decref(root);

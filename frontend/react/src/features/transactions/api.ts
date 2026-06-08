@@ -45,12 +45,18 @@ export function fetchStatement(params: {
     to?: string;
     limit?: number;
     offset?: number;
+    transaction_type?: string;
+    sort?: 'oldest' | 'newest';
 }): Promise<StatementResponse> {
     const q = new URLSearchParams({ account_id: String(params.account_id) });
     if (params.from) q.set('from', params.from);
     if (params.to) q.set('to', params.to);
-    if (params.limit) q.set('limit', String(params.limit));
-    if (params.offset) q.set('offset', String(params.offset));
+    if (params.limit !== undefined) q.set('limit', String(params.limit));
+    if (params.offset !== undefined) q.set('offset', String(params.offset));
+    if (params.transaction_type && params.transaction_type !== 'All') {
+        q.set('transaction_type', params.transaction_type);
+    }
+    if (params.sort) q.set('sort', params.sort);
     return apiClient.get<StatementResponse>(`/transactions/statement?${q}`);
 }
 

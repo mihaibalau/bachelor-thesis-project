@@ -12,7 +12,7 @@ import {
     TextField,
     Typography,
 } from '@mui/material';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../../shared/components/PageHeader';
 import { ErrorAlert } from '../../shared/components/ErrorAlert';
@@ -23,13 +23,10 @@ import { useSurfaceStyles } from '../../shared/hooks/useSurfaceStyles';
 import { useButtonStyles } from '../../shared/hooks/useButtonStyles';
 import { TransactionActivityList } from '../../shared/components/TransactionActivityList';
 import { formatRon, monthStartIso, todayIso } from '../../shared/format';
-import { statementRangeBalances } from '../../shared/transactionDisplay';
 import { fetchStatement } from '../transactions/api';
-import type { StatementEntry } from '../transactions/types';
 
 const TX_TYPES = ['All', 'Deposit', 'Withdrawal', 'Payment', 'Transfer', 'Send'] as const;
 const PAGE_SIZES = [10, 25, 50, 100] as const;
-const FETCH_LIMIT = 500;
 
 type SortOrder = 'oldest' | 'newest';
 type ViewMode = 'grouped' | 'flat';
@@ -47,8 +44,15 @@ export function StatementsPage() {
     const [sortOrder, setSortOrder] = useState<SortOrder>('oldest');
     const [viewMode, setViewMode] = useState<ViewMode>('grouped');
     const [pageSize, setPageSize] = useState<number>(25);
-    const [page, setPage] = useState(1);
-    const [serverPage, setServerPage] = useState(0);
+    const [applied, setApplied] = useState({
+        accountId: Number(params.get('account')) || 0,
+        from: params.get('from') || monthStartIso(),
+        to: params.get('to') || todayIso(),
+        typeFilter: 'All',
+        sortOrder: 'oldest' as SortOrder,
+        pageSize: 25,
+        page: 1,
+    });
 
     useEffect(() => {
         // Default to the first account once the list loads (one-time selection).
@@ -56,73 +60,75 @@ export function StatementsPage() {
         if (accounts.length && accountId === '') setAccountId(accounts[0].id);
     }, [accounts, accountId]);
 
-    const selectedAccount = accounts.find((a) => a.id === accountId);
-
-    // Fetch up to FETCH_LIMIT rows per server page for the selected account/range.
-    const { data, isLoading, error, reload } = useAsyncData(
-        () =>
-            accountId
-                ? fetchStatement({
-                    account_id: Number(accountId),
-                    from,
-                    to,
-                    limit: FETCH_LIMIT,
-                    offset: serverPage * FETCH_LIMIT,
-                })
-                : Promise.resolve({ items: [] }),
-        [accountId, from, to, serverPage],
-    );
-
-    // Client-side type filter on the fetched batch.
-    const filtered = useMemo(() => {
-        let items: StatementEntry[] = data?.items ?? [];
-        if (typeFilter !== 'All') {
-            items = items.filter((i) => i.transaction_type === typeFilter);
-        }
-        return items;
-    }, [data?.items, typeFilter]);
-
-    const signedAmounts = useMemo(() => {
-        const map = new Map<number, number>();
-        for (const row of filtered) {
-            map.set(row.transaction_id, row.value_cents);
-        }
-        return map;
-    }, [filtered]);
-
-    const balancesVisible = typeFilter === 'All';
-    const { opening: openingBalance, closing: closingBalance } = useMemo(
-        () => (balancesVisible ? statementRangeBalances(filtered, signedAmounts) : { opening: null, closing: null }),
-        [filtered, signedAmounts, balancesVisible],
-    );
-
-    const processed = useMemo(() => {
-        if (sortOrder === 'newest') return [...filtered].reverse();
-        return filtered;
-    }, [filtered, sortOrder]);
-
-    const totalPages = Math.max(1, Math.ceil(processed.length / pageSize));
-    const safePage = Math.min(page, totalPages);
-    const paged = processed.slice((safePage - 1) * pageSize, safePage * pageSize);
-
-    // Reset pagination, sync URL params, and refetch statement data.
-    const applyFilters = () => {
-        setPage(1);
-        setServerPage(0);
-        if (accountId) {
-            setParams({
-                account: String(accountId),
+    useEffect(() => {
+        if (typeof accountId === 'number' && accountId > 0 && applied.accountId === 0) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setApplied({
+                accountId,
                 from,
                 to,
+                typeFilter: 'All',
+                sortOrder: 'oldest',
+                pageSize: 25,
+                page: 1,
             });
         }
-        void reload();
+    }, [accountId, from, to, applied.accountId]);
+
+    const selectedAccount = accounts.find((a) => a.id === accountId);
+
+    const { data, isLoading, error, reload } = useAsyncData(
+        () =>
+            applied.accountId
+                ? fetchStatement({
+                    account_id: applied.accountId,
+                    from: applied.from,
+                    to: applied.to,
+                    transaction_type: applied.typeFilter,
+                    sort: applied.sortOrder,
+                    limit: applied.pageSize,
+                    offset: (applied.page - 1) * applied.pageSize,
+                })
+                : Promise.resolve({
+                    items: [],
+                    total_count: 0,
+                    opening_balance_cents: null,
+                    closing_balance_cents: null,
+                }),
+        [
+            applied.accountId,
+            applied.from,
+            applied.to,
+            applied.typeFilter,
+            applied.sortOrder,
+            applied.pageSize,
+            applied.page,
+        ],
+    );
+
+    const totalPages = Math.max(1, Math.ceil((data?.total_count ?? 0) / applied.pageSize));
+    const safePage = Math.min(applied.page, totalPages);
+    const balancesVisible = applied.typeFilter === 'All';
+    const openingBalance = balancesVisible ? data?.opening_balance_cents ?? null : null;
+    const closingBalance = balancesVisible ? data?.closing_balance_cents ?? null : null;
+
+    const applyFilters = () => {
+        const id = Number(accountId);
+        if (!id) return;
+        setApplied({
+            accountId: id,
+            from,
+            to,
+            typeFilter,
+            sortOrder,
+            pageSize,
+            page: 1,
+        });
+        setParams({ account: String(id), from, to });
     };
 
     const handleAccountChange = (id: number) => {
         setAccountId(id);
-        setPage(1);
-        setServerPage(0);
     };
 
     const panelSx = {
@@ -190,7 +196,7 @@ export function StatementsPage() {
                             <Select
                                 label="Type"
                                 value={typeFilter}
-                                onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }}
+                                onChange={(e) => setTypeFilter(e.target.value)}
                             >
                                 {TX_TYPES.map((t) => (
                                     <MenuItem key={t} value={t}>{t}</MenuItem>
@@ -205,7 +211,7 @@ export function StatementsPage() {
                             <Select
                                 label="Sort"
                                 value={sortOrder}
-                                onChange={(e) => { setSortOrder(e.target.value as SortOrder); setPage(1); }}
+                                onChange={(e) => setSortOrder(e.target.value as SortOrder)}
                             >
                                 <MenuItem value="oldest">Oldest first</MenuItem>
                                 <MenuItem value="newest">Newest first</MenuItem>
@@ -227,7 +233,7 @@ export function StatementsPage() {
                             <Select
                                 label="Page size"
                                 value={pageSize}
-                                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+                                onChange={(e) => setPageSize(Number(e.target.value))}
                             >
                                 {PAGE_SIZES.map((s) => (
                                     <MenuItem key={s} value={s}>{s} rows</MenuItem>
@@ -248,7 +254,7 @@ export function StatementsPage() {
                 </Stack>
             </Paper>
 
-            {processed.length > 0 && openingBalance !== null && closingBalance !== null && (
+            {(data?.total_count ?? 0) > 0 && openingBalance !== null && closingBalance !== null && (
                 <Typography
                     variant="body2"
                     color="text.secondary"
@@ -261,10 +267,10 @@ export function StatementsPage() {
                     <Box component="span" sx={highlight}>{formatRon(closingBalance)}</Box>
                     {' · '}
                     <Box component="span" sx={{ color: 'text.primary', fontWeight: 600 }}>
-                        {processed.length}
+                        {data?.total_count ?? 0}
                     </Box>
                     {' '}
-                    transaction{processed.length === 1 ? '' : 's'}
+                    transaction{(data?.total_count ?? 0) === 1 ? '' : 's'}
                     {selectedAccount && (
                         <>
                             {' · '}
@@ -281,11 +287,11 @@ export function StatementsPage() {
             <Paper elevation={0} sx={{ ...panelSx, overflow: 'hidden' }}>
                 {isLoading ? (
                     <Stack sx={{ p: 2 }} spacing={1}>{[0, 1, 2, 3, 4].map((i) => <Skeleton key={i} height={56} />)}</Stack>
-                ) : !paged.length ? (
+                ) : !data?.items.length ? (
                     <Typography sx={{ p: 3 }} color="text.secondary">No statement entries match your filters.</Typography>
                 ) : (
                     <TransactionActivityList
-                        items={paged.map((row) => ({
+                        items={data.items.map((row) => ({
                             id: row.transaction_id,
                             from_account_id: 0,
                             to_account_id: 0,
@@ -293,12 +299,12 @@ export function StatementsPage() {
                             value_cents: 0,
                             recorded_on: row.recorded_on,
                             description: row.description,
-                            signed_value_cents: signedAmounts.get(row.transaction_id) ?? row.value_cents,
+                            signed_value_cents: row.value_cents,
                         }))}
-                        accountId={Number(accountId)}
+                        accountId={applied.accountId}
                         groupByDate={viewMode === 'grouped'}
                         showBalanceAfter={(row) => {
-                            const entry = paged.find((e) => e.transaction_id === row.id);
+                            const entry = data.items.find((e) => e.transaction_id === row.id);
                             return entry ? formatRon(entry.balance_after_cents) : undefined;
                         }}
                     />
@@ -309,7 +315,9 @@ export function StatementsPage() {
                 <Pagination
                     count={totalPages}
                     page={safePage}
-                    onChange={(_, p) => setPage(p)}
+                    onChange={(_, p) => {
+                        setApplied((prev) => ({ ...prev, page: p }));
+                    }}
                     color="primary"
                     shape="rounded"
                     disabled={isLoading}
@@ -318,30 +326,6 @@ export function StatementsPage() {
                     Page {safePage} of {totalPages}
                 </Typography>
             </Stack>
-
-            {data && data.items.length >= FETCH_LIMIT && (
-                <Stack direction="row" spacing={1} sx={{ justifyContent: 'center', mt: 2 }}>
-                    <Button
-                        size="small"
-                        variant="outlined"
-                        color="inherit"
-                        disabled={serverPage === 0}
-                        onClick={() => { setServerPage((p) => p - 1); setPage(1); }}
-                        sx={softOutlined}
-                    >
-                        Earlier period
-                    </Button>
-                    <Button
-                        size="small"
-                        variant="outlined"
-                        color="inherit"
-                        onClick={() => { setServerPage((p) => p + 1); setPage(1); }}
-                        sx={softOutlined}
-                    >
-                        Load more history
-                    </Button>
-                </Stack>
-            )}
         </>
     );
 }

@@ -19,15 +19,16 @@ static bool acct_repo_list_for_user_adapter(
         (AccountRepo *)ctx, user_id, out_accounts, out_count, err);
 }
 
-static bool acct_repo_exists_by_account_type_adapter(
+static bool acct_repo_exists_by_type_and_currency_adapter(
     void *ctx,
     UserId user_id,
     AccountType account_type,
+    Currency currency,
     bool *out_exists,
     RepoError *err
 ) {
-    return account_repo_exists_by_account_type(
-        (AccountRepo *)ctx, user_id, account_type, out_exists, err);
+    return account_repo_exists_by_type_and_currency(
+        (AccountRepo *)ctx, user_id, account_type, currency, out_exists, err);
 }
 
 static bool acct_repo_exists_by_iban_adapter(
@@ -71,7 +72,7 @@ static bool acct_repo_update_adapter(
 
 static const AccountServiceRepositoryVTable ACCOUNT_REPO_VTABLE = {
     acct_repo_list_for_user_adapter,
-    acct_repo_exists_by_account_type_adapter,
+    acct_repo_exists_by_type_and_currency_adapter,
     acct_repo_exists_by_iban_adapter,
     acct_repo_get_by_id_adapter,
     acct_repo_insert_adapter
@@ -134,31 +135,22 @@ bool account_service_open_account(
 
     // 2. Enforce at-most-one account per (type, currency).
     RepoError rerr;
-    Account **owned = NULL;
-    size_t    owned_n = 0;
-
-    if (!svc->repo.vtable->list_for_user(
-            svc->repo.ctx, cmd->user_id, &owned, &owned_n, &rerr)) {
+    bool type_currency_exists = false;
+    if (!svc->repo.vtable->exists_by_type_and_currency(
+            svc->repo.ctx, cmd->user_id, cmd->account_type, cmd->currency,
+            &type_currency_exists, &rerr)) {
         if (err) *err = service_error_from_repo(&rerr);
         return false;
     }
-
-    for (size_t i = 0; i < owned_n; ++i) {
-        bool same_type = account_type_get(owned[i]) == cmd->account_type;
-        bool same_curr = account_currency(owned[i]) == cmd->currency;
-        account_free(owned[i]);
-        if (same_type && same_curr) {
-            free(owned);
-            char msg[128];
-            snprintf(msg, sizeof msg,
-                     "you already have a %s %s account",
-                     account_type_as_str(cmd->account_type),
-                     currency_as_str(cmd->currency));
-            if (err) *err = service_error_conflict("account", msg);
-            return false;
-        }
+    if (type_currency_exists) {
+        char msg[128];
+        snprintf(msg, sizeof msg,
+                 "you already have a %s %s account",
+                 account_type_as_str(cmd->account_type),
+                 currency_as_str(cmd->currency));
+        if (err) *err = service_error_conflict("account", msg);
+        return false;
     }
-    free(owned);
 
     // 3. Enforce global IBAN uniqueness.
     bool exists = false;
@@ -250,29 +242,22 @@ bool account_service_open_account_raw(
 
     // 3. Enforce at-most-one account per (type, currency).
     RepoError rerr;
-    Account **owned = NULL;
-    size_t    owned_n = 0;
-    if (!svc->repo.vtable->list_for_user(
-            svc->repo.ctx, user_id, &owned, &owned_n, &rerr)) {
+    bool type_currency_exists = false;
+    if (!svc->repo.vtable->exists_by_type_and_currency(
+            svc->repo.ctx, user_id, account_type, currency,
+            &type_currency_exists, &rerr)) {
         if (err) *err = service_error_from_repo(&rerr);
         return false;
     }
-    for (size_t i = 0; i < owned_n; ++i) {
-        bool same_type = account_type_get(owned[i]) == account_type;
-        bool same_curr = account_currency(owned[i]) == currency;
-        account_free(owned[i]);
-        if (same_type && same_curr) {
-            free(owned);
-            char msg[128];
-            snprintf(msg, sizeof msg,
-                     "you already have a %s %s account",
-                     account_type_as_str(account_type),
-                     currency_as_str(currency));
-            if (err) *err = service_error_conflict("account", msg);
-            return false;
-        }
+    if (type_currency_exists) {
+        char msg[128];
+        snprintf(msg, sizeof msg,
+                 "you already have a %s %s account",
+                 account_type_as_str(account_type),
+                 currency_as_str(currency));
+        if (err) *err = service_error_conflict("account", msg);
+        return false;
     }
-    free(owned);
 
     // 4. Generate a unique IBAN, build the Account and persist it.
     const int MAX_RETRIES = 5;

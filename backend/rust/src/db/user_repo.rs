@@ -1,6 +1,7 @@
 use tracing::debug;
 use crate::db::Db;
 use crate::db::errors::RepoError;
+use crate::domain::account::Account;
 use crate::domain::errors::DomainError;
 use crate::domain::ids::UserId;
 use crate::domain::user::User;
@@ -108,6 +109,63 @@ impl UserRepo {
             .await?;
 
         Ok(UserId(rec.id))
+    }
+
+    pub async fn insert_with_default_account(
+        &self,
+        user: &User,
+        make_account: &(dyn Fn(UserId) -> Result<Account, DomainError> + Send + Sync),
+    ) -> Result<UserId, RepoError> {
+        // 1. Only persist users without an assigned id
+        if user.id().is_some() {
+            return Err(RepoError::from(DomainError::validation(
+                "Cannot insert a User that already has an id",
+            )));
+        }
+
+        // 2. Single DB transaction: insert the user and its default account
+        //    together (rolls back automatically on any early return).
+        let mut tx = self.db.pool().begin().await?;
+
+        let rec = sqlx::query!(
+            r#"
+            INSERT INTO users (tag, email, first_name, last_name, phone, birth_date, password_hash)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+            "#,
+            user.tag(),
+            user.email().as_str(),
+            user.first_name(),
+            user.last_name(),
+            user.phone(),
+            user.birth_date(),
+            user.password_hash(),
+        )
+            .fetch_one(&mut *tx)
+            .await?;
+
+        let user_id = UserId(rec.id);
+
+        // 3. Build the default account for the new user id and insert it
+        let account = make_account(user_id)?;
+        let account_type = account.account_type();
+        let currency = account.currency();
+        sqlx::query!(
+            r#"
+            INSERT INTO accounts (user_id, account_type, currency, balance_cents, iban)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+            account.user_id().0,
+            account_type.as_str(),
+            currency.as_str(),
+            account.balance_cents(),
+            account.iban().as_str(),
+        )
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(user_id)
     }
 
     pub async fn update(&self, user: &User) -> Result<(), RepoError> {

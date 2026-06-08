@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use anyhow::Error as AnyError;
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use async_trait::async_trait;
@@ -8,6 +8,7 @@ use jsonwebtoken::{encode, EncodingKey, Header};
 use crate::db::errors::RepoError;
 use crate::db::user_repo::UserRepo;
 use crate::domain::account::Account;
+use crate::domain::errors::DomainError;
 use crate::domain::ids::{UserId};
 use crate::domain::user::User;
 use crate::domain::value::email::Email;
@@ -19,6 +20,12 @@ pub trait UserRepository: Send + Sync {
     async fn get_by_email(&self, email: &Email) -> Result<User, RepoError>;
     async fn get_by_tag(&self, tag: &str) -> Result<User, RepoError>;
     async fn insert(&self, user: &User) -> Result<UserId, RepoError>;
+    // Insert the user and its default account in a single DB transaction.
+    async fn insert_with_default_account(
+        &self,
+        user: &User,
+        make_account: &(dyn Fn(UserId) -> Result<Account, DomainError> + Send + Sync),
+    ) -> Result<UserId, RepoError>;
     async fn update(&self, user: &User) -> Result<(), RepoError>;
     async fn delete(&self, user_id: UserId) -> Result<(), RepoError>;
 }
@@ -40,6 +47,14 @@ impl UserRepository for UserRepo {
 
     async fn insert(&self, user: &User) -> Result<UserId, RepoError> {
         self.insert(user).await
+    }
+
+    async fn insert_with_default_account(
+        &self,
+        user: &User,
+        make_account: &(dyn Fn(UserId) -> Result<Account, DomainError> + Send + Sync),
+    ) -> Result<UserId, RepoError> {
+        self.insert_with_default_account(user, make_account).await
     }
 
     async fn update(&self, user: &User) -> Result<(), RepoError> {
@@ -168,7 +183,7 @@ where
             Ok(_) => {
                 return Err(ServiceError::conflict(
                     "user",
-                    format!("email '{}' is already in use", cmd.email),
+                    "email is already in use",
                 ));
             }
             Err(RepoError::NotFound(_)) => {}
@@ -179,7 +194,7 @@ where
             Ok(_) => {
                 return Err(ServiceError::conflict(
                     "user",
-                    format!("tag '{}' is already in use", cmd.tag),
+                    "tag is already in use",
                 ));
             }
             Err(RepoError::NotFound(_)) => {}
@@ -192,7 +207,11 @@ where
         let plain_password = cmd.password;
         let password_hash = task::spawn_blocking(move || -> Result<String, AnyError> {
             let salt = SaltString::generate(&mut OsRng);
-            Argon2::default()
+            // Explicit Argon2id parameters (m=65536 KiB, t=3, p=1) — kept identical
+            // to the C backend so both produce comparable hashes.
+            let params = Params::new(65536, 3, 1, None).map_err(AnyError::msg)?;
+            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+            argon2
                 .hash_password(plain_password.as_bytes(), &salt)
                 .map(|h| h.to_string())
                 .map_err(AnyError::new)   // argon2::Error -> AnyError
@@ -212,27 +231,30 @@ where
             password_hash,
         )?;
 
-        // 5. Persist user
-        let user_id = self.user_repo.insert(&user).await?;
-
-        info!(user_id = user_id.0, "user registered successfully");
-
-        // 6. Create and persist default Regular RON account
+        // 5. Reserve a unique IBAN for the default account (read-only pre-check)
         let mut default_account_iban = IBAN::generate()?;
         while self.account_repo.exists_by_iban(default_account_iban.as_str()).await? {
             default_account_iban = IBAN::generate()?;
         }
 
-        let default_account = Account::create(
-            user_id,
-            AccountType::Regular,
-            Currency::Ron,
-            0,
-            default_account_iban,
-        )?;
+        // 6. Persist the user and its default Regular RON account atomically
+        let iban_for_default = default_account_iban;
+        let make_account = move |uid: UserId| {
+            Account::create(
+                uid,
+                AccountType::Regular,
+                Currency::Ron,
+                0,
+                iban_for_default.clone(),
+            )
+        };
 
-        self.account_repo.insert(&default_account).await?;
+        let user_id = self
+            .user_repo
+            .insert_with_default_account(&user, &make_account)
+            .await?;
 
+        info!(user_id = user_id.0, "user registered successfully");
         info!(user_id = user_id.0, "default user account created successfully");
 
         Ok(user_id)

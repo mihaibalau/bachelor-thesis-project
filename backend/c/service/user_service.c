@@ -104,6 +104,18 @@ static bool user_repo_update_adapter(
     return user_repo_update((UserRepo *)ctx, user, err);
 }
 
+static bool user_repo_begin_adapter(void *ctx, RepoError *err) {
+    return user_repo_begin((UserRepo *)ctx, err);
+}
+
+static bool user_repo_commit_adapter(void *ctx, RepoError *err) {
+    return user_repo_commit((UserRepo *)ctx, err);
+}
+
+static bool user_repo_rollback_adapter(void *ctx) {
+    return user_repo_rollback((UserRepo *)ctx);
+}
+
 static bool user_repo_delete_adapter(
     void *ctx,
     UserId id,
@@ -118,7 +130,10 @@ static const UserRepositoryVTable USER_REPO_VTABLE = {
     user_repo_get_by_tag_adapter,
     user_repo_insert_adapter,
     user_repo_update_adapter,
-    user_repo_delete_adapter
+    user_repo_delete_adapter,
+    user_repo_begin_adapter,
+    user_repo_commit_adapter,
+    user_repo_rollback_adapter
 };
 
 UserRepository user_repository_from_user_repo(UserRepo *repo) {
@@ -294,7 +309,7 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    // 5. Build domain User and persist.
+    // 5. Build domain User (no DB writes yet).
     User *user = user_create(
         cmd->tag,
         &email,
@@ -310,26 +325,13 @@ bool user_service_register_user(UserService *svc,
         return false;
     }
 
-    UserId new_id;
-    if (!svc->user_repo.vtable->insert(
-            svc->user_repo.ctx,
-            user,
-            &new_id,
-            &rerr
-        )) {
-        user_free(user);
-        if (err) *err = service_error_from_repo(&rerr);
-        return false;
-    }
-
-    user_free(user);
-    *out_user_id = new_id;
-
-    // 6. Create default RON Regular account with unique IBAN.
+    // 6. Reserve a unique IBAN for the default account (read-only pre-check,
+    //    kept outside the write transaction to mirror the Rust backend).
     IBAN default_iban;
     bool iban_exists = false;
 
     if (!iban_generate(&default_iban, &derr)) {
+        user_free(user);
         if (err) *err = service_error_from_domain(&derr);
         return false;
     }
@@ -341,15 +343,40 @@ bool user_service_register_user(UserService *svc,
                 default_iban.value,
                 &iban_exists,
                 &rerr_iban)) {
+            user_free(user);
             if (err) *err = service_error_from_repo(&rerr_iban);
             return false;
                 }
         if (!iban_exists) break;
         if (!iban_generate(&default_iban, &derr)) {
+            user_free(user);
             if (err) *err = service_error_from_domain(&derr);
             return false;
         }
     }
+
+    // 7. Persist the user and its default account atomically (single DB
+    //    transaction: both rows commit together or roll back together).
+    if (!svc->user_repo.vtable->begin(svc->user_repo.ctx, &rerr)) {
+        user_free(user);
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    UserId new_id;
+    if (!svc->user_repo.vtable->insert(
+            svc->user_repo.ctx,
+            user,
+            &new_id,
+            &rerr
+        )) {
+        svc->user_repo.vtable->rollback(svc->user_repo.ctx);
+        user_free(user);
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    user_free(user);
 
     Account *default_account = account_create(
         new_id,
@@ -360,6 +387,7 @@ bool user_service_register_user(UserService *svc,
         &derr
     );
     if (!default_account) {
+        svc->user_repo.vtable->rollback(svc->user_repo.ctx);
         if (err) *err = service_error_from_domain(&derr);
         return false;
     }
@@ -372,12 +400,20 @@ bool user_service_register_user(UserService *svc,
             &account_id,
             &rerr_acc2)) {
         account_free(default_account);
+        svc->user_repo.vtable->rollback(svc->user_repo.ctx);
         if (err) *err = service_error_from_repo(&rerr_acc2);
         return false;
             }
 
     account_free(default_account);
 
+    if (!svc->user_repo.vtable->commit(svc->user_repo.ctx, &rerr)) {
+        svc->user_repo.vtable->rollback(svc->user_repo.ctx);
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    *out_user_id = new_id;
     if (err) *err = service_error_ok();
     return true;
 }

@@ -39,4 +39,9 @@ bool transaction_repo_list_for_account(
     RepoError *err
 );
 
+/* Transaction control on the underlying shared connection. */
+bool transaction_repo_begin(TransactionRepo *repo, RepoError *err);
+bool transaction_repo_commit(TransactionRepo *repo, RepoError *err);
+bool transaction_repo_rollback(TransactionRepo *repo);
+
 #endif //C_TRANSACTION_REPO_H

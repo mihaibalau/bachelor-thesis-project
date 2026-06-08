@@ -6,6 +6,7 @@
 #include "service/include/account_service.h"
 #include "service/include/transaction_service.h"
 #include "service/include/affiliate_service.h"
+#include "service/include/dashboard_service.h"
 
 #define JWT_SECRET_MAX 256
 
@@ -14,6 +15,7 @@ typedef struct AppState {
     AccountService   *account_svc;
     TransactionService *tx_svc;
     AffiliateService *affiliate_svc;
+    DashboardService *dashboard_svc;
     char              jwt_secret[JWT_SECRET_MAX];
 } AppState;
 
@@ -23,6 +25,7 @@ void app_state_init(
     AccountService *account_svc,
     TransactionService *tx_svc,
     AffiliateService *affiliate_svc,
+    DashboardService *dashboard_svc,
     const char *jwt_secret
 );
 

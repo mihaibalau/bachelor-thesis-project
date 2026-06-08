@@ -106,14 +106,14 @@ Shared runtime dependency container.
 
 JWT gate for private routes.
 
-- `bool http_require_auth(AppState *state, struct MHD_Connection *conn, UserId *out_user_id, char *out_tag, size_t tag_cap, ServiceError *err);`
+- `bool http_require_auth(struct MHD_Connection *conn, const AppState *state, AuthClaims *out_claims, ServiceError *err);`
   - Purpose: Extract and validate Bearer token before protected handlers run.
   - Behaviour:
     1. Read `Authorization` header from MHD connection.
     2. Require `Bearer ` prefix.
-    3. Call `jwt_decode_user_id`.
-    4. Fill `*out_user_id` and optional tag buffer.
-  - Returns: `true` on success; `false` + `SERVICE_ERROR_VALIDATION` or forbidden-style error on failure.
+    3. Call `jwt_decode_user_id` with the full token (no fixed-size copy, so over-long tokens are rejected, never truncated).
+    4. Fill `out_claims->sub` with the decoded user id.
+  - Returns: `true` on success; `false` + `SERVICE_ERROR_VALIDATION` on missing header / bad scheme / invalid token.
 
 ---
 

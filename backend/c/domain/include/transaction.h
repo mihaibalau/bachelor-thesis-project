@@ -31,6 +31,7 @@ Transaction *transaction_rehydrate(
     TransactionType transaction_type,
     int64_t value_cents,
     time_t recorded_on,
+    long recorded_on_micros,
     const char *description,
     DomainError *err
 );
@@ -45,6 +46,8 @@ TransactionType transaction_type_get(const Transaction *t);
 const char    *transaction_type_str(const Transaction *t);
 int64_t        transaction_value_cents(const Transaction *t);
 time_t         transaction_recorded_on(const Transaction *t);
+/* Sub-second component of recorded_on, in microseconds (0..999999). */
+long           transaction_recorded_on_micros(const Transaction *t);
 const char    *transaction_description(const Transaction *t);
 
 /* Persistence hook */

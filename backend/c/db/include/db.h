@@ -34,4 +34,13 @@ PGresult *db_exec_params(
     RepoError *err
 );
 
+/* Transaction control helpers (BEGIN / COMMIT / ROLLBACK) on the shared
+ * connection. Return true on success, false on error (sets RepoError).
+ * db_rollback never sets RepoError so it can be used on cleanup paths without
+ * clobbering the original failure cause.
+ */
+bool db_begin(Db *db, RepoError *err);
+bool db_commit(Db *db, RepoError *err);
+bool db_rollback(Db *db);
+
 #endif //C_DB_H

@@ -46,12 +46,11 @@ bool http_require_auth(
     }
 
     // 3. Decode JWT and extract user id.
+    //    Pass the token through as-is (no fixed-size copy) so an over-long token
+    //    is validated in full and rejected, never silently truncated.
     const char *token_ptr = auth_header + sizeof(prefix) - 1;
-    char token_copy[1024];
-    strncpy(token_copy, token_ptr, sizeof(token_copy) - 1);
-    token_copy[sizeof(token_copy) - 1] = '\0';
 
-    if (!jwt_decode_user_id(state->jwt_secret, token_copy, &out_claims->sub, err)) {
+    if (!jwt_decode_user_id(state->jwt_secret, token_ptr, &out_claims->sub, err)) {
         LOG_DEBUG("auth", "jwt validation failed");
         return false;
     }

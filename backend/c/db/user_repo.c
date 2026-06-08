@@ -360,3 +360,24 @@ bool user_repo_delete(UserRepo *repo, UserId id, RepoError *err) {
     if (err) *err = repo_error_ok();
     return true;
 }
+
+bool user_repo_begin(UserRepo *repo, RepoError *err) {
+    if (!repo) {
+        if (err) *err = repo_error_db("UserRepo::begin: invalid arguments");
+        return false;
+    }
+    return db_begin(repo->db, err);
+}
+
+bool user_repo_commit(UserRepo *repo, RepoError *err) {
+    if (!repo) {
+        if (err) *err = repo_error_db("UserRepo::commit: invalid arguments");
+        return false;
+    }
+    return db_commit(repo->db, err);
+}
+
+bool user_repo_rollback(UserRepo *repo) {
+    if (!repo) return false;
+    return db_rollback(repo->db);
+}

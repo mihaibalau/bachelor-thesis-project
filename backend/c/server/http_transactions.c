@@ -20,15 +20,26 @@
 
 // Transactions routes: parse/serialize only; business rules in TransactionService.
 
-// Format time_t as RFC3339 UTC (chrono parity).
-static void rfc3339_utc(time_t t, char *buf, size_t buf_size) {
+// Format time_t + microseconds as RFC3339 UTC, matching chrono's to_rfc3339()
+// "AutoSi" sub-second rule: no fraction when 0, 3 digits for milliseconds,
+// otherwise 6 digits for microseconds.
+static void rfc3339_utc(time_t t, long micros, char *buf, size_t buf_size) {
     struct tm tmv;
 #ifdef _WIN32
     gmtime_s(&tmv, &t);
 #else
     gmtime_r(&t, &tmv);
 #endif
-    strftime(buf, buf_size, "%Y-%m-%dT%H:%M:%S+00:00", &tmv);
+    char base[32];
+    strftime(base, sizeof base, "%Y-%m-%dT%H:%M:%S", &tmv);
+
+    if (micros <= 0) {
+        snprintf(buf, buf_size, "%s+00:00", base);
+    } else if (micros % 1000 == 0) {
+        snprintf(buf, buf_size, "%s.%03ld+00:00", base, micros / 1000);
+    } else {
+        snprintf(buf, buf_size, "%s.%06ld+00:00", base, micros);
+    }
 }
 
 // Civil UTC date -> time_t (days-from-civil; matches service/Rust bounds).
@@ -201,7 +212,8 @@ static enum MHD_Result dispatch_post(AppState *state, struct MHD_Connection *con
 
 static json_t *transaction_to_json(const Transaction *tx) {
     char recorded[40];
-    rfc3339_utc(transaction_recorded_on(tx), recorded, sizeof recorded);
+    rfc3339_utc(transaction_recorded_on(tx), transaction_recorded_on_micros(tx),
+                recorded, sizeof recorded);
 
     json_t *o = json_object();
     json_object_set_new(o, "id",               json_integer((json_int_t)transaction_id(tx).value));
@@ -273,6 +285,8 @@ static enum MHD_Result handle_statement(AppState *state, struct MHD_Connection *
     const char *to_s         = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "to");
     const char *limit_s      = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "limit");
     const char *offset_s     = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "offset");
+    const char *type_s       = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "transaction_type");
+    const char *sort_s       = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "sort");
     if (!account_id_s) {
         return http_send_json(conn, MHD_HTTP_BAD_REQUEST,
             "{\"status\":400,\"code\":\"validation_error\",\"message\":\"account_id is required\"}");
@@ -282,31 +296,51 @@ static enum MHD_Result handle_statement(AppState *state, struct MHD_Connection *
     int64_t limit  = limit_s  ? (int64_t)strtoll(limit_s, NULL, 10)  : 0;
     int64_t offset = offset_s ? (int64_t)strtoll(offset_s, NULL, 10) : 0;
 
-    AccountStatementEntry *entries = NULL;
-    size_t count = 0;
+    AccountStatementResult result;
+    memset(&result, 0, sizeof result);
     if (!transaction_service_compute_account_statement_for_user_from_strings(
-            state->tx_svc, claims.sub, account_id, from_s, to_s, limit, offset,
-            &entries, &count, &serr)) {
+            state->tx_svc, claims.sub, account_id, from_s, to_s, type_s, sort_s,
+            limit, offset, &result, &serr)) {
         return http_send_service_error(conn, &serr);
     }
 
+    int64_t total_count = result.total_count;
+    bool has_opening = result.has_opening;
+    int64_t opening_balance = result.opening_balance_cents;
+    bool has_closing = result.has_closing;
+    int64_t closing_balance = result.closing_balance_cents;
+
     json_t *items = json_array();
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < result.item_count; ++i) {
         char recorded[40];
-        rfc3339_utc(entries[i].recorded_on, recorded, sizeof recorded);
+        rfc3339_utc(result.items[i].recorded_on, result.items[i].recorded_on_micros,
+                    recorded, sizeof recorded);
         json_t *o = json_object();
-        json_object_set_new(o, "transaction_id",      json_integer((json_int_t)entries[i].transaction_id.value));
-        json_object_set_new(o, "recorded_on",         json_string(recorded));
-        json_object_set_new(o, "description",         json_string(entries[i].description));
-        json_object_set_new(o, "transaction_type",    json_string(transaction_type_as_str(entries[i].transaction_type)));
-        json_object_set_new(o, "value_cents",         json_integer((json_int_t)entries[i].value_cents));
-        json_object_set_new(o, "balance_after_cents", json_integer((json_int_t)entries[i].balance_after_cents));
+        json_object_set_new(o, "transaction_id", json_integer((json_int_t)result.items[i].transaction_id.value));
+        json_object_set_new(o, "recorded_on", json_string(recorded));
+        json_object_set_new(o, "description", json_string(result.items[i].description));
+        json_object_set_new(o, "transaction_type", json_string(transaction_type_as_str(result.items[i].transaction_type)));
+        json_object_set_new(o, "value_cents", json_integer((json_int_t)result.items[i].value_cents));
+        json_object_set_new(o, "balance_after_cents", json_integer((json_int_t)result.items[i].balance_after_cents));
         json_array_append_new(items, o);
     }
-    free(entries);
+    account_statement_result_free(&result);
 
     json_t *root = json_object();
     json_object_set_new(root, "items", items);
+    json_object_set_new(root, "total_count", json_integer((json_int_t)total_count));
+    if (has_opening) {
+        json_object_set_new(root, "opening_balance_cents",
+            json_integer((json_int_t)opening_balance));
+    } else {
+        json_object_set_new(root, "opening_balance_cents", json_null());
+    }
+    if (has_closing) {
+        json_object_set_new(root, "closing_balance_cents",
+            json_integer((json_int_t)closing_balance));
+    } else {
+        json_object_set_new(root, "closing_balance_cents", json_null());
+    }
     char *s = json_dumps(root, JSON_COMPACT);
     json_decref(root);
 

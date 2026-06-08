@@ -12,6 +12,7 @@ use crate::{
         account::AccountService,
         transaction::TransactionService,
         affiliate::AffiliateService,
+        dashboard::DashboardService,
     },
 };
 
@@ -20,12 +21,14 @@ pub type UserSvc = UserService<UserRepo, AccountRepo>;
 pub type AccountSvc = AccountService<AccountRepo>;
 pub type TxSvc = TransactionService<TransactionRepo, AccountRepo>;
 pub type AffiliateSvc = AffiliateService<AffiliateRepo, AccountRepo, UserRepo>;
+pub type DashboardSvc = DashboardService;
 
 pub struct AppState {
     pub user_svc: Arc<UserSvc>,
     pub account_svc: Arc<AccountSvc>,
     pub tx_svc: Arc<TxSvc>,
     pub affiliate_svc: Arc<AffiliateSvc>,
+    pub dashboard_svc: Arc<DashboardSvc>,
     pub jwt_secret: String,
 }
 
@@ -35,6 +38,7 @@ impl AppState {
         account_svc: Arc<AccountSvc>,
         tx_svc: Arc<TxSvc>,
         affiliate_svc: Arc<AffiliateSvc>,
+        dashboard_svc: Arc<DashboardSvc>,
         jwt_secret: String
     ) -> Self {
         Self {
@@ -42,6 +46,7 @@ impl AppState {
             account_svc,
             tx_svc,
             affiliate_svc,
+            dashboard_svc,
             jwt_secret,
         }
     }

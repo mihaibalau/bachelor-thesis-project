@@ -23,4 +23,9 @@ bool user_repo_insert(UserRepo *repo, const User *user, UserId *out_id, RepoErro
 bool user_repo_update(UserRepo *repo, const User *user, RepoError *err);
 bool user_repo_delete(UserRepo *repo, UserId id, RepoError *err);
 
+/* Transaction control on the underlying shared connection. */
+bool user_repo_begin(UserRepo *repo, RepoError *err);
+bool user_repo_commit(UserRepo *repo, RepoError *err);
+bool user_repo_rollback(UserRepo *repo);
+
 #endif //C_USER_REPO_H

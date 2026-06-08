@@ -33,13 +33,15 @@ impl FromStr for TransactionType {
     type Err = DomainError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "Deposit"    => Ok(TransactionType::Deposit),
-            "Withdrawal" => Ok(TransactionType::Withdrawal),
-            "Send"       => Ok(TransactionType::Send),
-            "Transfer"   => Ok(TransactionType::Transfer),
-            "Payment"    => Ok(TransactionType::Payment),
-            other => Err(DomainError::validation(format!("invalid TransactionType: {other}"))),
+        // Case-insensitive parse normalized to the canonical Title-Case the DB
+        // CHECK constraint requires (matches the C strcasecmp behaviour).
+        match s.to_ascii_lowercase().as_str() {
+            "deposit"    => Ok(TransactionType::Deposit),
+            "withdrawal" => Ok(TransactionType::Withdrawal),
+            "send"       => Ok(TransactionType::Send),
+            "transfer"   => Ok(TransactionType::Transfer),
+            "payment"    => Ok(TransactionType::Payment),
+            _ => Err(DomainError::validation(format!("invalid TransactionType: {s}"))),
         }
     }
 }

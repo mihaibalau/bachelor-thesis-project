@@ -45,14 +45,16 @@ static bool transaction_repo_row_to_domain(
     const char *type_s        = PQgetvalue(res, row, col++);
     const char *value_s       = PQgetvalue(res, row, col++);
     const char *epoch_s       = PQgetvalue(res, row, col++);
+    const char *micros_s      = PQgetvalue(res, row, col++);
     const char *desc_s        = PQgetvalue(res, row, col++);
 
-    int64_t id_v, from_v, to_v, value_v, epoch_v;
+    int64_t id_v, from_v, to_v, value_v, epoch_v, micros_v;
     if (!util_str_to_i64(id_s, &id_v) ||
         !util_str_to_i64(from_id_s, &from_v) ||
         !util_str_to_i64(to_id_s, &to_v) ||
         !util_str_to_i64(value_s, &value_v) ||
-        !util_str_to_i64(epoch_s, &epoch_v)) {
+        !util_str_to_i64(epoch_s, &epoch_v) ||
+        !util_str_to_i64(micros_s, &micros_v)) {
         if (err) *err = repo_error_db("TransactionRepo: invalid integer in result");
         return false;
     }
@@ -76,6 +78,7 @@ static bool transaction_repo_row_to_domain(
         tx_type,
         value_v,
         recorded_on,
+        (long)micros_v,
         desc_s,
         &derr
     );
@@ -111,7 +114,8 @@ bool transaction_repo_get_by_id(
         repo->db,
         "SELECT id, from_account_id, to_account_id, "
         "       transaction_type, value_cents, "
-        "       EXTRACT(EPOCH FROM recorded_on)::BIGINT AS recorded_on_epoch, "
+        "       FLOOR(EXTRACT(EPOCH FROM recorded_on))::BIGINT AS recorded_on_epoch, "
+        "       (EXTRACT(MICROSECONDS FROM recorded_on)::BIGINT % 1000000) AS recorded_on_micros, "
         "       description "
         "FROM transactions WHERE id = $1",
         1,
@@ -167,9 +171,21 @@ bool transaction_repo_insert(
     snprintf(value_buf, sizeof value_buf, "%lld",
              (long long)transaction_value_cents(tx));
 
-    time_t recorded_on = transaction_recorded_on(tx);
-    char epoch_buf[32];
-    snprintf(epoch_buf, sizeof epoch_buf, "%lld", (long long)recorded_on);
+    // Build a full-precision UTC timestamp string ("YYYY-MM-DD HH:MM:SS.ffffff+00")
+    // so microseconds survive the round-trip (TO_TIMESTAMP(double) would lose them).
+    time_t recorded_on        = transaction_recorded_on(tx);
+    long   recorded_on_micros = transaction_recorded_on_micros(tx);
+    struct tm tmv;
+#ifdef _WIN32
+    gmtime_s(&tmv, &recorded_on);
+#else
+    gmtime_r(&recorded_on, &tmv);
+#endif
+    char ts_buf[40];
+    snprintf(ts_buf, sizeof ts_buf,
+             "%04d-%02d-%02d %02d:%02d:%02d.%06ld+00",
+             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec, recorded_on_micros);
 
     const char *desc_s = transaction_description(tx);
 
@@ -178,7 +194,7 @@ bool transaction_repo_insert(
         to_buf,
         type_s,
         value_buf,
-        epoch_buf,
+        ts_buf,
         desc_s
     };
 
@@ -188,7 +204,7 @@ bool transaction_repo_insert(
         "    from_account_id, to_account_id, transaction_type, "
         "    value_cents, recorded_on, description"
         ") VALUES ("
-        "    $1, $2, $3, $4, TO_TIMESTAMP($5), $6"
+        "    $1, $2, $3, $4, $5::timestamptz, $6"
         ") RETURNING id",
         6,
         params,
@@ -251,7 +267,8 @@ bool transaction_repo_list_for_account(
         repo->db,
         "SELECT id, from_account_id, to_account_id, "
         "       transaction_type, value_cents, "
-        "       EXTRACT(EPOCH FROM recorded_on)::BIGINT AS recorded_on_epoch, "
+        "       FLOOR(EXTRACT(EPOCH FROM recorded_on))::BIGINT AS recorded_on_epoch, "
+        "       (EXTRACT(MICROSECONDS FROM recorded_on)::BIGINT % 1000000) AS recorded_on_micros, "
         "       description "
         "FROM transactions "
         "WHERE from_account_id = $1 OR to_account_id = $1 "
@@ -300,4 +317,25 @@ bool transaction_repo_list_for_account(
     *out_count = (size_t)rows;
     if (err) *err = repo_error_ok();
     return true;
+}
+
+bool transaction_repo_begin(TransactionRepo *repo, RepoError *err) {
+    if (!repo) {
+        if (err) *err = repo_error_db("TransactionRepo::begin: invalid arguments");
+        return false;
+    }
+    return db_begin(repo->db, err);
+}
+
+bool transaction_repo_commit(TransactionRepo *repo, RepoError *err) {
+    if (!repo) {
+        if (err) *err = repo_error_db("TransactionRepo::commit: invalid arguments");
+        return false;
+    }
+    return db_commit(repo->db, err);
+}
+
+bool transaction_repo_rollback(TransactionRepo *repo) {
+    if (!repo) return false;
+    return db_rollback(repo->db);
 }

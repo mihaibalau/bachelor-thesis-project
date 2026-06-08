@@ -23,6 +23,9 @@ export type StatementEntry = {
 
 export type StatementResponse = {
     items: StatementEntry[];
+    total_count: number;
+    opening_balance_cents: number | null;
+    closing_balance_cents: number | null;
 };
 
 export type PerTypeTotal = {

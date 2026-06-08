@@ -1,9 +1,21 @@
 use std::sync::Arc;
 use axum::http::HeaderValue;
-use axum::Router;
+use axum::routing::get;
+use axum::{Json, Router};
+use serde::Serialize;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 
 use crate::server::{logging, routes, state::AppState};
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
+// Unauthenticated liveness probe for load balancers (outside the /api group).
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok" })
+}
 
 pub fn create_router(state: Arc<AppState>) -> Router {
     // 1. CORS layer from env
@@ -19,6 +31,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
     // 2. Nest API route modules, trace layer, shared state
     Router::new()
+        .route("/health", get(health))
         .nest("/api/users",        routes::users::router(state.clone()))
         .nest("/api/accounts",     routes::accounts::router(state.clone()))
         .nest("/api/affiliates",   routes::affiliates::router(state.clone()))

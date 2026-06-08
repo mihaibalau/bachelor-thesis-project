@@ -27,6 +27,18 @@ use crate::{
 };
 use std::str::FromStr;
 
+// Stable ordering for per-type totals so the JSON array is deterministic and
+// matches the C backend's enum iteration order.
+fn transaction_type_order(t: TransactionType) -> u8 {
+    match t {
+        TransactionType::Deposit => 0,
+        TransactionType::Withdrawal => 1,
+        TransactionType::Send => 2,
+        TransactionType::Transfer => 3,
+        TransactionType::Payment => 4,
+    }
+}
+
 #[derive(Deserialize)]
 pub struct DepositRequest {
     pub account_id: i64,
@@ -77,6 +89,8 @@ pub struct AccountStatementQueryDto {
     pub to: Option<String>,   // YYYY-MM-DD
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub transaction_type: Option<String>,
+    pub sort: Option<String>, // "oldest" | "newest"
 }
 
 #[derive(Deserialize)]
@@ -122,6 +136,9 @@ pub struct RecentTransactionsResponse {
 #[derive(Serialize)]
 pub struct AccountStatementResponse {
     pub items: Vec<AccountStatementEntryResponse>,
+    pub total_count: i64,
+    pub opening_balance_cents: Option<i64>,
+    pub closing_balance_cents: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -347,20 +364,23 @@ async fn get_account_statement(
     let user_id = UserId::from(claims.sub);
     let account_id = AccountId::from(q.account_id);
 
-    let entries = state
+    let result = state
         .tx_svc
         .compute_account_statement_for_user_from_strings(
             user_id,
             account_id,
             q.from.clone(),
             q.to.clone(),
+            q.transaction_type.clone(),
+            q.sort.clone(),
             q.limit,
             q.offset,
         )
         .await
         .map_err(ApiError::from)?;
 
-    let items = entries
+    let items = result
+        .items
         .into_iter()
         .map(|e| AccountStatementEntryResponse {
             transaction_id: e.transaction_id.0,
@@ -372,7 +392,12 @@ async fn get_account_statement(
         })
         .collect();
 
-    Ok(Json(AccountStatementResponse { items }))
+    Ok(Json(AccountStatementResponse {
+        items,
+        total_count: result.total_count,
+        opening_balance_cents: result.opening_balance_cents,
+        closing_balance_cents: result.closing_balance_cents,
+    }))
 }
 
 fn parse_summary_date_range(
@@ -439,10 +464,14 @@ fn build_summary_response(
         })
         .collect();
 
-    let per_type_totals = stats
+    let mut per_type_pairs: Vec<(TransactionType, i64)> = stats
         .per_type_totals
         .into_iter()
         .filter(|(_, v)| *v > 0)
+        .collect();
+    per_type_pairs.sort_by_key(|(t, _)| transaction_type_order(*t));
+    let per_type_totals = per_type_pairs
+        .into_iter()
         .map(|(t, v)| PerTypeTotalResponse {
             transaction_type: t.as_str().to_string(),
             total_cents: v,
@@ -503,8 +532,12 @@ async fn get_transaction_summary(
     if let Some(tx_type) = q.transaction_type.as_deref() {
         if tx_type != "All" {
             filters.transaction_type = Some(
+                // Match the C backend's plain "invalid transaction_type" text
+                // (no "validation error:" prefix).
                 TransactionType::from_str(tx_type)
-                    .map_err(|e| ApiError(ServiceError::Validation(e.to_string())))?,
+                    .map_err(|_| ApiError(ServiceError::Validation(
+                        "invalid transaction_type".to_string(),
+                    )))?,
             );
         }
     }
@@ -594,8 +627,12 @@ async fn get_user_monthly_summary(
         });
     }
 
-    let per_type_totals = stats
+    let mut per_type_pairs: Vec<(TransactionType, i64)> = stats
         .per_type_totals
+        .into_iter()
+        .collect();
+    per_type_pairs.sort_by_key(|(t, _)| transaction_type_order(*t));
+    let per_type_totals = per_type_pairs
         .into_iter()
         .map(|(t, v)| PerTypeTotalResponse {
             transaction_type: t.as_str().to_string(),

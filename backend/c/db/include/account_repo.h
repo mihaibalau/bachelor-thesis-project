@@ -38,5 +38,6 @@ bool account_repo_delete(AccountRepo *repo, AccountId id, RepoError *err);
 
 bool account_repo_exists_by_iban(AccountRepo *repo, const char *iban_str, bool *out_exists, RepoError *err);
 bool account_repo_exists_by_account_type(AccountRepo *repo, UserId user_id, AccountType account_type, bool *out_exists, RepoError *err);
+bool account_repo_exists_by_type_and_currency(AccountRepo *repo, UserId user_id, AccountType account_type, Currency currency, bool *out_exists, RepoError *err);
 
 #endif //C_ACCOUNT_REPO_H

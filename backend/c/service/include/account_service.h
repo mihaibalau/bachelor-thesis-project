@@ -19,7 +19,7 @@
  *
  *   pub trait AccountRepository: Send + Sync {
  *       async fn list_for_user(...) -> ...;
- *       async fn exists_by_account_type(...) -> ...;
+ *       async fn exists_by_type_and_currency(...) -> ...;
  *       async fn exists_by_iban(...) -> ...;
  *       async fn get_by_id(...) -> ...;
  *       async fn insert(...) -> ...;
@@ -39,10 +39,11 @@ typedef struct AccountServiceRepositoryVTable {
         size_t *out_count,
         RepoError *err);
 
-    bool (*exists_by_account_type)(
+    bool (*exists_by_type_and_currency)(
         void *ctx,
         UserId user_id,
         AccountType account_type,
+        Currency currency,
         bool *out_exists,
         RepoError *err);
 

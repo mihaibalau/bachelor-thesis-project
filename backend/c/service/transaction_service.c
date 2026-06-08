@@ -65,10 +65,25 @@ static bool tx_repo_list_for_account_adapter(
         (TransactionRepo *)ctx, account_id, limit, offset, out_txs, out_count, err);
 }
 
+static bool tx_repo_begin_adapter(void *ctx, RepoError *err) {
+    return transaction_repo_begin((TransactionRepo *)ctx, err);
+}
+
+static bool tx_repo_commit_adapter(void *ctx, RepoError *err) {
+    return transaction_repo_commit((TransactionRepo *)ctx, err);
+}
+
+static bool tx_repo_rollback_adapter(void *ctx) {
+    return transaction_repo_rollback((TransactionRepo *)ctx);
+}
+
 static const TransactionRepositoryVTable TX_REPO_VTABLE = {
     tx_repo_get_by_id_adapter,
     tx_repo_insert_adapter,
-    tx_repo_list_for_account_adapter
+    tx_repo_list_for_account_adapter,
+    tx_repo_begin_adapter,
+    tx_repo_commit_adapter,
+    tx_repo_rollback_adapter
 };
 
 TransactionRepository tx_repository_from_repo(TransactionRepo *repo) {
@@ -351,6 +366,9 @@ static int compare_tx_by_recorded_on(const void *a, const void *b) {
     time_t ra = transaction_recorded_on(ta);
     time_t rb = transaction_recorded_on(tb);
     if (ra != rb) return (ra > rb) - (ra < rb);
+    long ma = transaction_recorded_on_micros(ta);
+    long mb = transaction_recorded_on_micros(tb);
+    if (ma != mb) return (ma > mb) - (ma < mb);
     int64_t ia = transaction_id(ta).value;
     int64_t ib = transaction_id(tb).value;
     return (ia > ib) - (ia < ib);
@@ -361,6 +379,9 @@ static int compare_entry_asc(const void *a, const void *b) {
     const AccountStatementEntry *eb = (const AccountStatementEntry *)b;
     if (ea->recorded_on != eb->recorded_on)
         return (ea->recorded_on > eb->recorded_on) - (ea->recorded_on < eb->recorded_on);
+    if (ea->recorded_on_micros != eb->recorded_on_micros)
+        return (ea->recorded_on_micros > eb->recorded_on_micros)
+             - (ea->recorded_on_micros < eb->recorded_on_micros);
     int64_t ia = ea->transaction_id.value;
     int64_t ib = eb->transaction_id.value;
     return (ia > ib) - (ia < ib);
@@ -517,13 +538,22 @@ bool transaction_service_record_transaction(
         return false;
     }
 
-    // 2. Update account balances (reject overdraft before insert).
+    // 2. Open a DB transaction so balance update(s) + tx insert commit together.
+    RepoError rerr;
+    if (!svc->tx_repo.vtable->begin(svc->tx_repo.ctx, &rerr)) {
+        transaction_free(tx);
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    // 3. Update account balances (reject overdraft before insert).
     if (!record_transaction_apply_balances(svc, cmd, err)) {
+        svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
         transaction_free(tx);
         return false;
     }
 
-    RepoError rerr;
+    // 4. Persist the transaction row.
     TransactionId new_id;
     bool ok = svc->tx_repo.vtable->insert(
         svc->tx_repo.ctx, tx, &new_id, &rerr);
@@ -531,6 +561,14 @@ bool transaction_service_record_transaction(
     transaction_free(tx);
 
     if (!ok) {
+        svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
+        if (err) *err = service_error_from_repo(&rerr);
+        return false;
+    }
+
+    // 5. Commit; balances and the new row become visible together.
+    if (!svc->tx_repo.vtable->commit(svc->tx_repo.ctx, &rerr)) {
+        svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
         if (err) *err = service_error_from_repo(&rerr);
         return false;
     }
@@ -572,18 +610,25 @@ bool transaction_service_list_for_account(
     return true;
 }
 
+void account_statement_result_free(AccountStatementResult *result) {
+    if (!result) return;
+    free(result->items);
+    result->items = NULL;
+    result->item_count = 0;
+}
+
 bool transaction_service_compute_account_statement(
     TransactionService *svc,
     const AccountStatementQuery *query,
-    AccountStatementEntry **out_entries,
-    size_t *out_count,
+    AccountStatementResult *out,
     ServiceError *err)
 {
-    if (!svc || !query || !out_entries || !out_count) {
+    if (!svc || !query || !out) {
         if (err) *err = service_error_validation(
             "TransactionService::compute_account_statement: invalid arguments");
         return false;
     }
+    memset(out, 0, sizeof *out);
 
     AccountId account_id = query->account_id;
 
@@ -643,6 +688,7 @@ bool transaction_service_compute_account_statement(
 
         entries[i].transaction_id      = transaction_id(tx);
         entries[i].recorded_on         = transaction_recorded_on(tx);
+        entries[i].recorded_on_micros  = transaction_recorded_on_micros(tx);
         entries[i].transaction_type    = transaction_type_get(tx);
         entries[i].value_cents         = delta;
         entries[i].balance_after_cents = running;
@@ -670,9 +716,40 @@ bool transaction_service_compute_account_statement(
         count = write;
     }
 
-    // 7. Paginate newest-first slice, return oldest-first.
+    // 7. Optional transaction-type filter.
+    if (query->has_tx_type) {
+        size_t write = 0;
+        for (size_t i = 0; i < count; ++i) {
+            if (entries[i].transaction_type == query->tx_type) {
+                entries[write++] = entries[i];
+            }
+        }
+        count = write;
+    }
+
+    out->total_count = (int64_t)count;
+
+    if (count > 0) {
+        AccountStatementEntry *asc = (AccountStatementEntry *)malloc(
+            count * sizeof(AccountStatementEntry));
+        if (!asc) {
+            free(entries);
+            if (err) *err = service_error_internal("out of memory");
+            return false;
+        }
+        memcpy(asc, entries, count * sizeof(AccountStatementEntry));
+        qsort(asc, count, sizeof(AccountStatementEntry), compare_entry_asc);
+        out->has_opening = true;
+        out->opening_balance_cents = asc[0].balance_after_cents - asc[0].value_cents;
+        out->has_closing = true;
+        out->closing_balance_cents = asc[count - 1].balance_after_cents;
+        free(asc);
+    }
+
+    // 8. Sort for display, then paginate.
     if (count > 1) {
-        qsort(entries, count, sizeof(AccountStatementEntry), compare_entry_desc);
+        qsort(entries, count, sizeof(AccountStatementEntry),
+              query->sort_newest_first ? compare_entry_desc : compare_entry_asc);
     }
 
     size_t off = (query->offset < 0) ? 0 : (size_t)query->offset;
@@ -684,23 +761,20 @@ bool transaction_service_compute_account_statement(
 
     if (n == 0) {
         free(entries);
-        *out_entries = NULL;
-        *out_count   = 0;
         if (err) *err = service_error_ok();
         return true;
     }
 
-    if (start > 0) {
-        memmove(entries, entries + start, n * sizeof(AccountStatementEntry));
+    out->items = (AccountStatementEntry *)malloc(n * sizeof(AccountStatementEntry));
+    if (!out->items) {
+        free(entries);
+        if (err) *err = service_error_internal("out of memory");
+        return false;
     }
-    count = n;
+    memcpy(out->items, entries + start, n * sizeof(AccountStatementEntry));
+    out->item_count = n;
+    free(entries);
 
-    if (count > 1) {
-        qsort(entries, count, sizeof(AccountStatementEntry), compare_entry_asc);
-    }
-
-    *out_entries = entries;
-    *out_count   = count;
     if (err) *err = service_error_ok();
     return true;
 }
@@ -902,6 +976,14 @@ bool transaction_service_compute_user_statistics(
 
     if (err) *err = service_error_ok();
     return true;
+}
+
+// Alphabetical order for payment categories so the JSON array is deterministic
+// and matches the Rust backend's BTreeMap iteration order.
+static int compare_payment_cat(const void *a, const void *b) {
+    const PaymentCategoryTotal *ca = (const PaymentCategoryTotal *)a;
+    const PaymentCategoryTotal *cb = (const PaymentCategoryTotal *)b;
+    return strcmp(ca->category, cb->category);
 }
 
 static void parse_payment_category(const char *description, char *out, size_t out_sz) {
@@ -1145,6 +1227,9 @@ bool transaction_service_compute_user_statistics_extended(
             cats[cat_count].category[sizeof cats[cat_count].category - 1] = '\0';
             cats[cat_count].total_cents = value;
             cat_count++;
+        }
+        if (cats && cat_count > 1) {
+            qsort(cats, cat_count, sizeof *cats, compare_payment_cat);
         }
         *out_payment_cats = cats;
         *out_payment_cat_count = cat_count;
@@ -1499,10 +1584,12 @@ bool transaction_service_list_recent_for_user(
 
 bool transaction_service_compute_account_statement_for_user_from_strings(
     TransactionService *svc, UserId user_id, AccountId account_id,
-    const char *from_opt, const char *to_opt, int64_t limit, int64_t offset,
-    AccountStatementEntry **out_entries, size_t *out_count, ServiceError *err)
+    const char *from_opt, const char *to_opt,
+    const char *transaction_type_opt, const char *sort_opt,
+    int64_t limit, int64_t offset,
+    AccountStatementResult *out, ServiceError *err)
 {
-    if (!svc || !out_entries || !out_count) {
+    if (!svc || !out) {
         if (err) *err = service_error_validation(
             "compute_account_statement_for_user_from_strings: invalid arguments");
         return false;
@@ -1510,13 +1597,11 @@ bool transaction_service_compute_account_statement_for_user_from_strings(
     if (!ensure_account_owned_by(svc, user_id, account_id, err)) return false;
 
     AccountStatementQuery query;
+    memset(&query, 0, sizeof query);
     query.account_id = account_id;
-    query.has_from   = false;
-    query.from       = 0;
-    query.has_to     = false;
-    query.to         = 0;
     query.limit      = (limit <= 0)  ? 100 : limit;
     query.offset     = (offset < 0)  ? 0   : offset;
+    query.sort_newest_first = (sort_opt && strcmp(sort_opt, "newest") == 0);
 
     if (from_opt) {
         int y, m, d;
@@ -1537,6 +1622,18 @@ bool transaction_service_compute_account_statement_for_user_from_strings(
         query.to     = utc_civil_to_time(y, m, d, 23, 59, 59);
     }
 
+    if (transaction_type_opt && transaction_type_opt[0]
+        && strcmp(transaction_type_opt, "All") != 0) {
+        TransactionType tt;
+        DomainError derr;
+        if (!transaction_type_from_str(transaction_type_opt, &tt, &derr)) {
+            if (err) *err = service_error_validation("invalid transaction_type");
+            return false;
+        }
+        query.has_tx_type = true;
+        query.tx_type = tt;
+    }
+
     return transaction_service_compute_account_statement(
-        svc, &query, out_entries, out_count, err);
+        svc, &query, out, err);
 }

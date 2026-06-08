@@ -125,6 +125,8 @@ add_executable(c
         service/transaction_service.c
         service/include/affiliate_service.h
         service/affiliate_service.c
+        service/include/dashboard_service.h
+        service/dashboard_service.c
 
         # server
         server/http_state.c

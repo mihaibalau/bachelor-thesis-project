@@ -40,24 +40,27 @@ bachelor-thesis-project/
    - C: build with CMake in `backend/c`, run from `backend/c` (so `.env` is found)
 6. Frontend: `cd frontend/react && npm install && npm run dev`
 
-Both backends expose the same **22 API routes** so the React app can talk to either one.
+Both backends expose the same **22 API routes** under `/api` (plus an unauthenticated `GET /health`) so the React app can talk to either one.
 
 ## API overview
 
 | Area | Routes |
 |------|--------|
+| Health | `GET /health` (unauthenticated, outside `/api`) → `{"status":"ok"}` |
 | Users | register, login, profile |
 | Accounts | list, open, availability, detail |
 | Affiliates | CRUD, resolve-target |
 | Transactions | deposit, withdrawal, send, transfer, payment, recent, statement, summary, summary/monthly |
 | Dashboard | aggregated balances, spending, recent activity |
 
+Money-moving operations (deposit/withdrawal/send/transfer/payment) and user registration run inside a **single DB transaction** in both backends, so balance updates and the inserted row commit (or roll back) together.
+
 ## Environment variables
 
 | Variable | Rust | C | Frontend |
 |----------|------|---|----------|
 | `DATABASE_URL` | required | required (`DB_CONN` alias) | — |
-| `JWT_SECRET` | required | required | — |
+| `JWT_SECRET` | required (min 32 bytes) | required (min 32 bytes) | — |
 | `CORS_ORIGIN` | optional (default `http://localhost:5173`) | optional (default `http://localhost:5173`) | — |
 | `PORT` | optional (default `6767`) | optional (default `6767`) | — |
 | `VITE_API_BASE_URL` | — | — | optional (default `http://localhost:6767/api`) |
@@ -70,4 +73,4 @@ See [`deploy/AWS.md`](deploy/AWS.md) for Docker images and an AWS deployment gui
 
 ## Account rules
 
-The service layer enforces **one account per account type** per user (regardless of currency): once a user owns any `Regular` account, they cannot open another `Regular` account, and `GET /api/accounts/availability` marks the whole type as unavailable. (Migration `003` adds a `(user_id, account_type, currency)` unique index, which is more permissive than this service rule; the service check in `open_account` is the effective constraint.)
+A user may hold **at most one account per `(account_type, currency)` pair** — e.g. one Regular RON, one Regular EUR, and one Savings RON can coexist, but not two Regular RON accounts. This is enforced in both backends by the service check (`exists_by_type_and_currency` in `open_account`) and backed by the migration `003` unique index on `(user_id, account_type, currency)`. A duplicate returns `409 conflict` with message `you already have a {type} {currency} account`, and `GET /api/accounts/availability` marks only the owned `(type, currency)` pairs unavailable.

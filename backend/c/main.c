@@ -15,6 +15,7 @@
 #include "service/include/account_service.h"
 #include "service/include/transaction_service.h"
 #include "service/include/affiliate_service.h"
+#include "service/include/dashboard_service.h"
 
 #include "server/include/http_state.h"
 #include "server/include/http_server.h"
@@ -113,11 +114,35 @@ int main(void) {
         return 1;
     }
 
+    // 4e. DashboardService
+    DashboardService *dashboard_svc = dashboard_service_new(user_svc, tx_svc, affiliate_svc);
+    if (!dashboard_svc) {
+        LOG_ERROR("startup", "failed to create DashboardService");
+        affiliate_service_free(affiliate_svc);
+        dashboard_service_free(dashboard_svc);
+        transaction_service_free(tx_svc);
+        account_service_free(account_svc);
+        user_service_free(user_svc);
+        db_close(db);
+        return 1;
+    }
+
     // 5. Validate JWT_SECRET.
     const char *jwt_secret = getenv("JWT_SECRET");
     if (!jwt_secret || !jwt_secret[0]) {
         LOG_ERROR("startup", "JWT_SECRET must be set - copy .env.example to .env");
         affiliate_service_free(affiliate_svc);
+        dashboard_service_free(dashboard_svc);
+        transaction_service_free(tx_svc);
+        account_service_free(account_svc);
+        user_service_free(user_svc);
+        db_close(db);
+        return 1;
+    }
+    if (strlen(jwt_secret) < 32) {
+        LOG_ERROR("startup", "JWT_SECRET must be at least 32 bytes long");
+        affiliate_service_free(affiliate_svc);
+        dashboard_service_free(dashboard_svc);
         transaction_service_free(tx_svc);
         account_service_free(account_svc);
         user_service_free(user_svc);
@@ -127,6 +152,7 @@ int main(void) {
     if (strlen(jwt_secret) >= JWT_SECRET_MAX) {
         LOG_ERROR("startup", "JWT_SECRET exceeds max length (%d bytes)", JWT_SECRET_MAX - 1);
         affiliate_service_free(affiliate_svc);
+        dashboard_service_free(dashboard_svc);
         transaction_service_free(tx_svc);
         account_service_free(account_svc);
         user_service_free(user_svc);
@@ -136,7 +162,7 @@ int main(void) {
 
     // 6. Build AppState.
     AppState state;
-    app_state_init(&state, user_svc, account_svc, tx_svc, affiliate_svc, jwt_secret);
+    app_state_init(&state, user_svc, account_svc, tx_svc, affiliate_svc, dashboard_svc, jwt_secret);
 
     // 7. Start HTTP server.
     struct HttpServer srv;
@@ -153,6 +179,7 @@ int main(void) {
     if (!http_server_start(&srv, &state, port)) {
         LOG_ERROR("startup", "failed to start HTTP server on port %u", port);
         affiliate_service_free(affiliate_svc);
+        dashboard_service_free(dashboard_svc);
         transaction_service_free(tx_svc);
         account_service_free(account_svc);
         user_service_free(user_svc);
@@ -166,6 +193,7 @@ int main(void) {
 
     // 8. Shutdown and free resources.
     http_server_stop(&srv);
+    dashboard_service_free(dashboard_svc);
     affiliate_service_free(affiliate_svc);
     transaction_service_free(tx_svc);
     account_service_free(account_svc);

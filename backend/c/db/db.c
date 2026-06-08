@@ -87,3 +87,40 @@ PGresult *db_exec_params(
     if (err) *err = repo_error_ok();
     return res;
 }
+
+// Run a parameter-less control statement (BEGIN/COMMIT/ROLLBACK) via PQexec.
+static bool db_exec_simple(Db *db, const char *sql, RepoError *err) {
+    if (!db || !db->conn) {
+        if (err) *err = repo_error_db("Db: invalid arguments");
+        return false;
+    }
+    PGresult *res = PQexec(db->conn, sql);
+    if (!res) {
+        if (err) *err = repo_error_db("Db: PQexec returned NULL");
+        return false;
+    }
+    ExecStatusType status = PQresultStatus(res);
+    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
+        const char *msg = PQresultErrorMessage(res);
+        if (!msg || msg[0] == '\0') msg = PQerrorMessage(db->conn);
+        if (err) *err = repo_error_db(msg);
+        PQclear(res);
+        return false;
+    }
+    PQclear(res);
+    if (err) *err = repo_error_ok();
+    return true;
+}
+
+bool db_begin(Db *db, RepoError *err) {
+    return db_exec_simple(db, "BEGIN", err);
+}
+
+bool db_commit(Db *db, RepoError *err) {
+    return db_exec_simple(db, "COMMIT", err);
+}
+
+bool db_rollback(Db *db) {
+    // Best-effort: never overwrites the caller's original error.
+    return db_exec_simple(db, "ROLLBACK", NULL);
+}

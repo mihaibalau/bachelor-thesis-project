@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::db::errors::RepoError;
+use crate::domain::account::Account;
 use crate::domain::errors::DomainError;
 use crate::domain::ids::{AccountId, TransactionId};
 use crate::domain::transaction::Transaction;
@@ -85,6 +86,87 @@ impl TransactionRepo {
             .fetch_one(self.db.pool())
             .await?;
 
+        Ok(TransactionId(rec.id))
+    }
+
+    pub async fn record_atomic(
+        &self,
+        updated_accounts: &[Account],
+        tx: &Transaction,
+    ) -> Result<TransactionId, RepoError> {
+        // 1. Only persist transactions without an assigned id
+        if tx.id().is_some() {
+            return Err(RepoError::from(DomainError::validation(
+                "Cannot insert a Transaction that already has an id",
+            )));
+        }
+
+        // 2. Open a single DB transaction; it rolls back automatically if any
+        //    step below returns early (the guard is dropped without commit).
+        let mut db_tx = self.db.pool().begin().await?;
+
+        // 3. Persist updated account balances
+        for account in updated_accounts {
+            let id = account.id().ok_or_else(|| {
+                RepoError::from(DomainError::validation(
+                    "Cannot update an Account without an id",
+                ))
+            })?;
+            let account_type = account.account_type();
+            let currency = account.currency();
+            let result = sqlx::query!(
+                r#"
+                UPDATE accounts
+                SET user_id = $1,
+                    account_type = $2,
+                    currency = $3,
+                    balance_cents = $4,
+                    iban = $5
+                WHERE id = $6
+                "#,
+                account.user_id().0,
+                account_type.as_str(),
+                currency.as_str(),
+                account.balance_cents(),
+                account.iban().as_str(),
+                id.0,
+            )
+                .execute(&mut *db_tx)
+                .await?;
+
+            if result.rows_affected() == 0 {
+                return Err(RepoError::not_found("account"));
+            }
+        }
+
+        // 4. Insert the transaction row
+        let tx_type = tx.transaction_type_str();
+        let recorded_on = tx.recorded_on();
+        let rec = sqlx::query!(
+            r#"
+            INSERT INTO transactions (
+                from_account_id,
+                to_account_id,
+                transaction_type,
+                value_cents,
+                recorded_on,
+                description
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+            "#,
+            tx.from_account_id().0,
+            tx.to_account_id().0,
+            tx_type,
+            tx.value_cents(),
+            recorded_on,
+            tx.description(),
+        )
+            .fetch_one(&mut *db_tx)
+            .await?;
+
+        // 5. Commit; balances and the new row become visible together
+        db_tx.commit().await?;
         Ok(TransactionId(rec.id))
     }
 

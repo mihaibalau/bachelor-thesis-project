@@ -43,11 +43,16 @@ impl IntoResponse for ApiError {
                 "validation_error",
                 message,
             ),
-            ServiceError::Domain(e) => (
-                StatusCode::BAD_REQUEST,
-                "domain_error",
-                format!("domain error: {}", e.to_string())
-            ),
+            ServiceError::Domain(e) => {
+                // Emit the bare validation message (no "domain error: validation error:"
+                // prefix) to match the C backend's domain-error text.
+                let crate::domain::errors::DomainError::Validation(message) = e;
+                (
+                    StatusCode::BAD_REQUEST,
+                    "domain_error",
+                    message,
+                )
+            },
             ServiceError::Repo(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "repo_error",

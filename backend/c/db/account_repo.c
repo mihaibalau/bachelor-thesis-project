@@ -413,6 +413,48 @@ bool account_repo_exists_by_iban(AccountRepo *repo, const char *iban_str, bool *
     return true;
 }
 
+bool account_repo_exists_by_type_and_currency(
+    AccountRepo *repo,
+    UserId user_id,
+    AccountType account_type,
+    Currency currency,
+    bool *out_exists,
+    RepoError *err
+) {
+    if (!repo || !out_exists) {
+        if (err) *err = repo_error_db("AccountRepo::exists_by_type_and_currency: invalid arguments");
+        return false;
+    }
+
+    char user_buf[32];
+    snprintf(user_buf, sizeof user_buf, "%lld", (long long)user_id_to_i64(user_id));
+    const char *account_type_s = account_type_as_str(account_type);
+    const char *currency_s     = currency_as_str(currency);
+
+    const char *params[3] = { user_buf, account_type_s, currency_s };
+
+    PGresult *res = db_exec_params(
+        repo->db,
+        "SELECT EXISTS ("
+        "    SELECT 1 FROM accounts "
+        "    WHERE user_id = $1 AND account_type = $2 AND currency = $3"
+        ")",
+        3,
+        params,
+        err
+    );
+    if (!res) {
+        return false;
+    }
+
+    const char *exists_s = PQntuples(res) == 1 ? PQgetvalue(res, 0, 0) : NULL;
+    *out_exists = (exists_s && (exists_s[0] == 't' || exists_s[0] == 'T'));
+    PQclear(res);
+
+    if (err) *err = repo_error_ok();
+    return true;
+}
+
 bool account_repo_exists_by_account_type(
     AccountRepo *repo,
     UserId user_id,
