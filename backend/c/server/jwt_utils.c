@@ -31,12 +31,12 @@ static char *b64url_encode(const unsigned char *data, size_t len) {
     out[bptr->length] = '\0';
     BIO_free_all(b64);
 
-    // 1. Convert to base64url (+/ → -_).
+    // JWT uses base64url, not standard base64 — remap chars and drop padding.
     for (size_t i = 0; out[i]; ++i) {
         if (out[i] == '+') out[i] = '-';
         else if (out[i] == '/') out[i] = '_';
     }
-    // 2. Strip padding '='.
+    // Strip trailing '=' padding.
     size_t olen = strlen(out);
     while (olen > 0 && out[olen - 1] == '=') out[--olen] = '\0';
 
@@ -47,7 +47,7 @@ static char *b64url_encode(const unsigned char *data, size_t len) {
 static unsigned char *b64url_decode(const char *in, size_t *out_len) {
     size_t in_len = strlen(in);
 
-    // reconstruct padding
+    // Base64 needs length multiple of 4; JWT strips padding, so add it back.
     size_t pad  = (4 - (in_len % 4)) % 4;
     char *padded = (char *)malloc(in_len + pad + 1);
     if (!padded) return NULL;
@@ -55,7 +55,7 @@ static unsigned char *b64url_decode(const char *in, size_t *out_len) {
     for (size_t i = 0; i < pad; ++i) padded[in_len + i] = '=';
     padded[in_len + pad] = '\0';
 
-    // base64url → base64
+    // Undo base64url char mapping before OpenSSL decode.
     for (size_t i = 0; padded[i]; ++i) {
         if (padded[i] == '-') padded[i] = '+';
         else if (padded[i] == '_') padded[i] = '/';
@@ -79,6 +79,7 @@ static unsigned char *b64url_decode(const char *in, size_t *out_len) {
 
 // ── HMAC-SHA256 ────────────────────────────────────────────────────
 
+// HMAC-SHA256 over the signing input (header.payload string).
 static bool hmac_sha256(
     const char *secret,
     const char *message,
@@ -150,7 +151,7 @@ bool jwt_decode_user_id(
     }
     free(token_sig);
 
-    // 4. Decode the payload and extract "sub" + "exp
+    // 4. Decode payload and extract "sub" + "exp".
     size_t payload_b64_len = (size_t)(dot2 - dot1 - 1);
     char *payload_b64 = (char *)malloc(payload_b64_len + 1);
     if (!payload_b64) {
@@ -231,7 +232,7 @@ bool jwt_encode_user_id(
     size_t out_token_size,
     ServiceError *err
 ) {
-    // {"alg":"HS256","typ":"JWT"} — jsonwebtoken from Rust
+    // HS256 JWT: base64url(header) . base64url(payload) . HMAC-SHA256(secret, above).
     const char *header_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
     char *header_b64 = b64url_encode(
         (const unsigned char *)header_json, strlen(header_json));

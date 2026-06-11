@@ -260,7 +260,7 @@ impl TryFrom<AccountRow> for Account {
     type Error = DomainError;
 
     fn try_from(row: AccountRow) -> Result<Self, Self::Error> {
-        // 1. Parse enum/value-object columns, then rehydrate with DB id
+        // Parse enum/value-object columns, then rehydrate with DB id
         let id = AccountId(row.id);
         let user_id = UserId(row.user_id);
 

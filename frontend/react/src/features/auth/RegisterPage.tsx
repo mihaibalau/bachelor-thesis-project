@@ -29,7 +29,6 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { useNavigate } from 'react-router-dom';
 import { useColorMode } from '../theme/useColorMode';
 import { AUTH_PRIMARY_BUTTON_SX } from '../../shared/buttonStyles';
-import gentlixLogo from '../../assets/logo.png';
 import { registerUser } from './api';
 import { ApiError } from '../../shared/apiError';
 
@@ -193,7 +192,7 @@ export function RegisterPage() {
                             >
                                 <Box
                                     component="img"
-                                    src={gentlixLogo}
+                                    src="/logo.png"
                                     alt="Gentlix Bank logo"
                                     sx={{
                                         width: 52,

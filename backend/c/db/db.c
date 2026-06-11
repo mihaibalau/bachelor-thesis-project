@@ -3,12 +3,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * Db wraps one libpq PGconn. All repos share it, so BEGIN on any repo
+ * starts a transaction visible to every query on that connection.
+ */
+
 struct Db {
     PGconn *conn;
 };
 
 bool db_connect(const char *conninfo, Db **out, RepoError *err) {
-    // 1. Allocate Db and connect via libpq.
+    // Allocate Db wrapper and connect via libpq.
     if (!conninfo || !out) {
         if (err) *err = repo_error_db("Db: invalid arguments");
         return false;

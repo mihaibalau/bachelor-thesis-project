@@ -54,7 +54,7 @@ pub struct WithdrawalRequest {
 #[derive(Deserialize)]
 pub struct SendRequest {
     pub from_account_id: i64,
-    pub recipient_account_id: i64, // de ex. din affiliate
+    pub recipient_account_id: i64, // ex. affiliate
     pub value_cents: i64,
     pub message: String,
 }
@@ -69,7 +69,7 @@ pub struct TransferRequest {
 #[derive(Deserialize)]
 pub struct PaymentRequest {
     pub from_account_id: i64,
-    pub amount: i64, // fără cenți
+    pub amount: i64,
     pub category: String,
     pub merchant_name: String,
     pub note: Option<String>,

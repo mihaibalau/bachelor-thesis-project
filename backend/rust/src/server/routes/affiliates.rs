@@ -113,7 +113,7 @@ async fn create_affiliate(
     let owner_id = UserId::from(claims.sub);
     let recipient_sub_account_id = AccountId::from(body.recipient_sub_account_id);
 
-    // 1. Delegate to service
+    // Delegate to service
     state
         .affiliate_svc
         .create_affiliate(owner_id, recipient_sub_account_id, body.nickname)
@@ -224,7 +224,7 @@ async fn resolve_affiliate_target(
 ) -> ApiResult<Json<ResolveAffiliateTargetResponse>> {
     let owner_id = UserId::from(claims.sub);
 
-    // 1. Resolve by identifier type
+    // Resolve by identifier type
     let view = match body.identifier_type {
         IdentifierType::Tag => state
             .affiliate_svc

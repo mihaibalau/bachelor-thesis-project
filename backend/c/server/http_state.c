@@ -1,6 +1,10 @@
 #include "include/http_state.h"
 #include <string.h>
 
+/*
+ * AppState = all services + JWT secret for one process.
+ * libmicrohttpd passes this pointer into http_request_handler as void* cls.
+ */
 void app_state_init(
     AppState *state,
     UserService *user_svc,

@@ -8,7 +8,10 @@
 #include "include/http_util.h"
 #include "../util/include/log.h"
 
-// Top-level dispatch: strip /api/<group> prefix and forward subpath (axum .nest()).
+/*
+ * Top-level HTTP router: /health is bare; /api/* strips prefix and
+ * forwards subpath to a module dispatcher (Axum .nest() equivalent).
+ */
 
 // Match prefix at a path boundary; return remaining subpath.
 static const char *match_prefix(const char *url, const char *prefix) {

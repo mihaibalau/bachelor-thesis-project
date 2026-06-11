@@ -1,0 +1,938 @@
+\chapter{Safety, Correctness, and Concurrency}
+\label{chap:ch5}
+
+\par Modern banking backends must stay correct under load, not only crash-free. Gentlix Bank
+implements the same product in C and Rust, but the two codebases prove safety in different
+places: C through conventions and review, Rust through types and the borrow checker.
+This chapter examines three topics that sit on top of the design patterns from
+Chapter~\ref{chap:ch4}: \textbf{type-driven invariants} in the domain layer,
+\textbf{error propagation} through services, and \textbf{concurrency} in the analytics
+pipeline. Database schema alignment and HTTP error envelopes belong to
+Chapter~\ref{sec:ch6sec1} and Section~\ref{subsec:ch6sec2-5}; they are referenced here
+only where a service decision depends on them.
+
+\section{Type-Driven Invariants}
+\label{sec:ch5sec1}
+
+Financial software can return HTTP success with wrong numbers. Gentlix therefore treats
+\emph{type-driven invariants} as first-class rules: what a value means, which combinations
+are illegal, and which constructor must be used before data enters the service layer.
+Blackburn and colleagues~\cite{Blackburn2025} separate spatial and temporal memory bugs
+from domain mistakes; this section focuses on the domain layer in \texttt{domain/} and
+\texttt{service/}---money, identities, and transaction shape.
+
+In C, many invariants are enforced by helper functions and repeated \texttt{if} checks.
+The compiler sees \texttt{int64\_t} and \texttt{const char *} whether or not a value was
+validated. In Rust, invalid states are often \emph{unrepresentable}: a value simply
+cannot exist unless it passed a validating constructor. Palmieri~\cite{Palmieri2022}
+describes this as the central idea of type-driven development---``we made it impossible
+for an instance of \texttt{SubscriberName} to violate those constraints [\ldots] it will
+not compile.'' Gentlix applies the same philosophy to \texttt{Email}, \texttt{IBAN}, and
+account identifiers.
+
+\medskip\noindent\textbf{Money, value objects, and identifiers.}\quad
+Floating-point must never represent customer balances. Gentlix stores money as
+\texttt{int64\_t} cents end-to-end. ATM-style deposits accept whole currency units in JSON
+but convert before domain logic runs. Rust rejects overflow explicitly with
+\texttt{checked\_mul}; C guards with an explicit bound before multiplying:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Unit-to-cent
+conversion uses \texttt{checked\_mul}; wraparound becomes a validation error.}]
+let value_cents = amount_units
+    .checked_mul(100)
+    .ok_or_else(|| ServiceError::Validation("amount too large".into()))?;
+\end{lstlisting}
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Same rule: reject
+amounts that would overflow when converted to cents.}]
+if (amount_units > INT64_MAX / 100) {
+    if (err) *err = service_error_validation("amount too large");
+    return false;
+}
+cmd.value_cents = amount_units * 100;
+\end{lstlisting}
+
+Drysdale~\cite{Drysdale2024}
+recommends making monetary arithmetic explicit rather than assuming inputs stay small.
+
+Value objects wrap raw strings after validation. In Rust, \texttt{Email} is built only
+through \texttt{FromStr}:
+
+\begin{lstlisting}[language=Rust, caption={email.rs --- An \texttt{Email} cannot exist
+without passing validation.}]
+impl FromStr for Email {
+    type Err = DomainError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(DomainError::validation("Email must not be empty"));
+        }
+        if s.split('@').collect::<Vec<_>>().len() != 2 {
+            return Err(DomainError::validation(
+                "Email must contain exactly one '@'"));
+        }
+        Ok(Email(s.to_string()))
+    }
+}
+\end{lstlisting}
+
+In the login flow, \texttt{user.rs} parses once and shadows the raw string
+(Section~\ref{sec:ch3sec3}). C validates through \texttt{email\_try\_create} and
+\texttt{iban\_validate}, but a validated \texttt{Email} struct still stores a plain
+\texttt{char[]} that looks like any other string elsewhere in the file:
+
+\begin{lstlisting}[language=C, caption={email.c --- Validation is explicit; the return
+type does not carry the proof to distant call sites.}]
+bool email_try_create(const char *raw, Email *out, DomainError *err) {
+    /* trim whitespace, reject empty and overlong input */
+    char *at = strchr(buffer, '@');
+    if (!at || strchr(at + 1, '@')) {
+        if (err) *err = domain_error_validation(
+            "Email must contain exactly one '@'");
+        return false;
+    }
+    strcpy(out->value, buffer);
+    return true;
+}
+\end{lstlisting}
+
+\texttt{IBAN} follows the same value-object pattern. Rust validates length and country
+code in \texttt{FromStr}; C normalises whitespace and checks the same invariants in
+\texttt{iban\_try\_create}:
+
+\begin{lstlisting}[language=Rust, caption={iban.rs --- Invalid IBAN strings cannot
+become an \texttt{IBAN} value.}]
+impl FromStr for IBAN {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let iban: String = s.trim().chars()
+            .filter(|c| !c.is_whitespace()).collect();
+        if iban.len() != 24 {
+            return Err(DomainError::validation("Invalid IBAN length"));
+        }
+        if !iban.starts_with("RO") {
+            return Err(DomainError::validation("Invalid country code"));
+        }
+        Ok(IBAN(iban))
+    }
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=C, caption={iban.c --- Same constraints; proof lives in
+the helper, not the C type system.}]
+bool iban_try_create(const char *raw, IBAN *out, DomainError *err) {
+    /* strip whitespace, uppercase, require len == 24 and RO prefix */
+    if (strlen(buffer) != 24) { /* ... */ return false; }
+    if (buffer[0] != 'R' || buffer[1] != 'O') { /* ... */ return false; }
+    strcpy(out->value, buffer);
+    return true;
+}
+\end{lstlisting}
+
+Drysdale~\cite{Drysdale2024} recommends pushing validation to the edges of a system
+so invalid data never reaches core logic. Gentlix does that in both languages; Rust
+simply makes the edge harder to bypass.
+
+Swapping \texttt{UserId} and \texttt{AccountId} is an access-control bug. C names them
+as separate structs in \texttt{ids.h}, yet both wrap \texttt{int64\_t value}:
+
+\begin{lstlisting}[language=C, caption={ids.h --- Intent is documented; the compiler
+does not prevent mixing identifiers.}]
+typedef struct { int64_t value; } UserId;
+typedef struct { int64_t value; } AccountId;
+\end{lstlisting}
+
+Rust newtypes are incompatible at compile time:
+
+\begin{lstlisting}[language=Rust, caption={ids.rs --- \texttt{UserId} and
+\texttt{AccountId} are distinct types.}]
+pub struct UserId(pub i64);
+pub struct AccountId(pub i64);
+\end{lstlisting}
+
+\texttt{ensure\_account\_owned\_by(user\_id, account\_id)} in Rust cannot compile with
+reversed arguments. Both backends load the account and compare \texttt{user\_id} before
+any debit:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Ownership check
+before \texttt{record\_transfer\_for\_user} delegates to the core recorder.}]
+static bool ensure_account_owned_by(
+    TransactionService *svc, UserId user_id,
+    AccountId account_id, ServiceError *err)
+{
+    Account *account = NULL;
+    if (!svc->account_repo.vtable->get_by_id(
+            svc->account_repo.ctx, account_id, &account, &rerr))
+        return false;
+    bool owned = (account_user_id(account).value == user_id.value);
+    account_free(account);
+    if (!owned) {
+        if (err) *err = service_error_not_found("account");
+        return false;
+    }
+    return true;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same rule;
+wrong owner becomes \texttt{NotFound}, not a debit attempt.}]
+async fn ensure_account_owned_by(
+    &self, user_id: UserId, account_id: AccountId,
+) -> ServiceResult<()> {
+    let account = self.account_repo.get_by_id(account_id).await?;
+    if account.user_id() != user_id {
+        return Err(ServiceError::not_found("account"));
+    }
+    Ok(())
+}
+\end{lstlisting}
+
+The C equivalent at call sites relies on review across dozens of paths.
+
+\medskip\noindent\textbf{Transaction and account rules.}\quad
+A transaction with the same source and destination, or with a negative amount, must not
+reach persistence. Rust centralises these rules in \texttt{Transaction::build}:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (domain) --- Illegal states
+are rejected before a \texttt{Transaction} value exists.}]
+if from_account_id == to_account_id {
+    return Err(DomainError::validation(
+        "From Account ID must be different from To Account ID"));
+}
+if value_cents < 0 {
+    return Err(DomainError::validation("Value must be >= 0"));
+}
+\end{lstlisting}
+
+C's \texttt{transaction\_create} enforces the same constraints and returns \texttt{NULL}
+with a \texttt{DomainError} out-parameter:
+
+\begin{lstlisting}[language=C, caption={transaction.c --- Domain rules live in one
+function; callers must check the return pointer.}]
+Transaction *transaction_create(
+    AccountId from, AccountId to, TransactionType type,
+    int64_t value_cents, const char *desc, DomainError *err)
+{
+    if (from.value == to.value) {
+        if (err) domain_error_set(err, DOMAIN_ERROR_VALIDATION,
+            "From Account ID must be different from To Account ID");
+        return NULL;
+    }
+    if (value_cents < 0) { /* ... */ return NULL; }
+    /* allocate and populate Transaction */
+}
+\end{lstlisting}
+
+The service layer in both languages adds \texttt{value\_cents <= 0} checks again before
+calling the domain constructor:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Service rejects
+non-positive amounts before \texttt{transaction\_create}.}]
+if (cmd->value_cents <= 0) {
+    if (err) *err = service_error_validation(
+        "transaction value must be strictly positive");
+    return false;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same guard
+at the top of \texttt{record\_transaction}.}]
+if cmd.value_cents <= 0 {
+    return Err(ServiceError::Validation(
+        "transaction value must be strictly positive".into()));
+}
+\end{lstlisting}
+
+Defence in depth by convention in C; redundant but harmless when Rust already narrows
+the input through earlier validation.
+
+A row that has not yet been inserted has no database id. Rust makes that state explicit
+through \texttt{Option<TransactionId>}: \texttt{Transaction::create} passes \texttt{None};
+\texttt{Transaction::rehydrate} passes \texttt{Some(id)} after a PostgreSQL read:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (domain) --- \texttt{None}
+means ``not persisted yet''; \texttt{Some} means reloaded from the database.}]
+pub struct Transaction {
+    id: Option<TransactionId>,
+    from_account_id: AccountId,
+    to_account_id: AccountId,
+    /* ... */
+}
+
+pub fn create(/* ... */) -> Result<Self, DomainError> {
+    Self::build(None, from_account_id, /* ... */)
+}
+
+pub fn id(&self) -> Option<TransactionId> {
+    self.id
+}
+\end{lstlisting}
+
+C stores the same distinction as a \texttt{bool has\_id} flag beside a
+\texttt{TransactionId} field. \texttt{transaction\_create} sets \texttt{has\_id = false};
+the repository refuses insert when the flag is already set:
+
+\begin{lstlisting}[language=C, caption={transaction.c / transaction\_repo.c ---
+C uses a flag; Rust uses \texttt{Option}. Both reject double-insert.}]
+struct Transaction {
+    bool has_id;
+    TransactionId id;
+    /* ... */
+};
+
+// transaction_repo.c --- guard before INSERT
+if (transaction_has_id(tx)) {
+    if (err) *err = repo_error_from_domain(&derr);
+    return false;   /* already has an id */
+}
+\end{lstlisting}
+
+Nothing in C stops a caller from reading \texttt{transaction\_id(tx)} when
+\texttt{has\_id} is false---the value may be zero or stale. Rust forces callers through
+\texttt{id()} and pattern-match on \texttt{Option}.
+
+Opening a second account with the same \texttt{(account\_type, currency)} pair must fail
+with a conflict error. Both backends query the repository before insert:
+
+\begin{lstlisting}[language=C, caption={account\_service.c --- Duplicate
+(type, currency) rejected before domain \texttt{Account} is built.}]
+if (type_currency_exists) {
+    snprintf(msg, sizeof msg,
+             "you already have a %s %s account",
+             account_type_as_str(cmd->account_type),
+             currency_as_str(cmd->currency));
+    if (err) *err = service_error_conflict("account", msg);
+    return false;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={account.rs (service) --- Same rule via
+\texttt{ServiceError::Conflict}.}]
+if self.repo.exists_by_type_and_currency(
+    user_id, account_type, currency).await? {
+    return Err(ServiceError::conflict("account", format!(
+        "you already have a {} {} account",
+        account_type.as_str(), currency.as_str())));
+}
+\end{lstlisting}
+
+When a user submits \texttt{POST /api/transactions/transfer}, the service rejects
+non-positive amounts, verifies account ownership, checks overdraft before debit, and only
+then asks the repository to persist. The \texttt{record\_transfer\_for\_user} wrappers
+call \texttt{ensure\_account\_owned\_by} on both accounts first:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Transfer route
+checks ownership before recording.}]
+bool transaction_service_record_transfer_for_user(
+    TransactionService *svc, UserId user_id,
+    AccountId from_id, AccountId to_id,
+    int64_t value_cents, TransactionId *out_id, ServiceError *err)
+{
+    if (!ensure_account_owned_by(svc, user_id, from_id, err)) return false;
+    if (!ensure_account_owned_by(svc, user_id, to_id, err))   return false;
+    return record_transfer(svc, from_id, to_id, value_cents, out_id, err);
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same wrapper
+shape.}]
+pub async fn record_transfer_for_user(
+    &self, user_id: UserId, from_id: AccountId,
+    to_id: AccountId, value_cents: i64,
+) -> ServiceResult<TransactionId> {
+    self.ensure_account_owned_by(user_id, from_id).await?;
+    self.ensure_account_owned_by(user_id, to_id).await?;
+    self.record_transfer(from_id, to_id, value_cents).await
+}
+\end{lstlisting}
+
+Both backends compare the source account balance
+against the requested amount \emph{before} calling \texttt{account\_debit} or
+\texttt{Account::debit}:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Overdraft rejected
+in the service layer before any balance mutation.}]
+if (account_balance_cents(from_acc) < cmd->value_cents) {
+    account_free(from_acc);
+    if (err) *err = service_error_validation("insufficient funds");
+    return false;
+}
+if (!account_debit(from_acc, cmd->value_cents, &derr)) { /* ... */ }
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same guard on
+transfer and withdrawal paths.}]
+if from_acc.balance_cents() < cmd.value_cents {
+    return Err(ServiceError::Validation("insufficient funds".into()));
+}
+from_acc.debit(cmd.value_cents)?;
+\end{lstlisting}
+
+The domain layer repeats the rule if a future caller skips the service check:
+
+\begin{lstlisting}[language=C, caption={account.c --- \texttt{account\_debit} is the
+last line of defence against overdraft.}]
+if (a->balance_cents < amount_cents) {
+    if (err) *err = domain_error_validation("Insufficient funds");
+    return false;
+}
+a->balance_cents -= amount_cents;
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={account.rs (domain) --- Same invariant
+inside \texttt{Account::debit}.}]
+if self.balance_cents < amount_cents {
+    return Err(DomainError::validation("Insufficient funds"));
+}
+self.balance_cents -= amount_cents;
+\end{lstlisting}
+
+Ledger atomicity at the database boundary is implemented in the repository layer
+(Section~\ref{subsec:ch6sec1-1}); the service assumes debit, credit, and insert commit
+together or roll back entirely.
+
+\section{Error Propagation}
+\label{sec:ch5sec2}
+
+When withdrawal exceeds balance, Gentlix must surface a structured failure the React app
+can display. Errors originate in the domain and repository layers and convert upward into
+\texttt{ServiceError}. Mapping those enums to HTTP status codes happens only in the HTTP
+layer (Section~\ref{subsec:ch6sec2-5}); this section stays inside \texttt{service/}.
+
+Schreiner~\cite{Schreiner1993} describes the idiomatic C pattern: return a status flag
+and optionally write into a caller-provided error struct---``messages to objects'' paired
+with out-parameters. Gentlix follows that model in \texttt{service\_error.c} and every
+service entry point:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- The C service
+returns \texttt{bool} and optionally fills \texttt{ServiceError *err}.}]
+bool transaction_service_record_transaction(
+    TransactionService             *svc,
+    const RecordTransactionCommand *cmd,
+    TransactionId                  *out_id,
+    ServiceError                   *err)
+\end{lstlisting}
+
+The recording pipeline can fail at every step: domain creation, repository
+\texttt{begin}, balance application, \texttt{insert}, or \texttt{commit}. C opens the
+SQL transaction before touching balances:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- \texttt{begin}
+pairs balance updates and insert in one DB transaction.}]
+if (!svc->tx_repo.vtable->begin(svc->tx_repo.ctx, &rerr)) {
+    transaction_free(tx);
+    if (err) *err = service_error_from_repo(&rerr);
+    return false;
+}
+if (!record_transaction_apply_balances(svc, cmd, err)) {
+    svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
+    /* ... */
+}
+\end{lstlisting}
+
+Rust delegates the equivalent boundary to \texttt{record\_atomic} (below). On failure,
+C pairs resources on each branch---\texttt{transaction\_free} and \texttt{rollback}:
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Error paths free
+the in-memory row and roll back the SQL transaction.}]
+if (!record_transaction_apply_balances(svc, cmd, err)) {
+    svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
+    transaction_free(tx);
+    return false;
+}
+bool ok = svc->tx_repo.vtable->insert(
+    svc->tx_repo.ctx, tx, &new_id, &rerr);
+transaction_free(tx);
+if (!ok) {
+    svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
+    if (err) *err = service_error_from_repo(&rerr);
+    return false;
+}
+\end{lstlisting}\end{minipage}
+
+Gatchell~\cite{Gatchell2003} stresses that missed cleanup branches are where production
+C systems silently leak or corrupt state. The deeper weakness is optional checking: nothing
+stops a caller from ignoring the \texttt{bool} return or passing \texttt{NULL} for
+\texttt{err}. Domain and repository failures convert through explicit helpers in C:
+
+\begin{lstlisting}[language=C, caption={service\_error.c / call sites --- Manual
+enum lift on every branch.}]
+ServiceError service_error_from_domain(const DomainError *derr);
+ServiceError service_error_from_repo(const RepoError *rerr);
+
+if (!tx) {
+    if (err) *err = service_error_from_domain(&derr);
+    return false;
+}
+\end{lstlisting}
+
+Rust collapses the pattern into \texttt{ServiceResult<T>}. The \texttt{thiserror} crate
+lifts \texttt{DomainError} and \texttt{RepoError} automatically:
+
+\begin{lstlisting}[language=Rust, caption={errors.rs --- \texttt{\#[from]} replaces
+manual conversion helpers.}]
+#[derive(Debug, Error)]
+pub enum ServiceError {
+    #[error("validation error: {0}")]
+    Validation(String),
+    #[error(transparent)]
+    Domain(#[from] DomainError),
+    #[error(transparent)]
+    Repo(#[from] RepoError),
+    #[error("forbidden")]
+    Forbidden,
+    #[error("concurrency error: {0}")]
+    Concurrency(String),
+}
+\end{lstlisting}
+
+The same transfer path reads linearly with \texttt{?}:
+
+\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) ---
+\texttt{record\_transaction} propagates failures with \texttt{?}.}]
+pub async fn record_transaction(
+    &self, cmd: RecordTransactionCommand,
+) -> ServiceResult<TransactionId> {
+    if cmd.value_cents <= 0 {
+        return Err(ServiceError::Validation(
+            "transaction value must be strictly positive".into()));
+    }
+    let tx = Transaction::create(
+        cmd.from_account_id, cmd.to_account_id,
+        cmd.transaction_type, cmd.value_cents,
+        cmd.description,
+    )?;
+    /* ... apply balances, insert via repository ... */
+    Ok(id)
+}
+\end{lstlisting}\end{minipage}
+
+Drysdale~\cite{Drysdale2024} notes that \texttt{Result} keeps the success path readable
+compared with nested \texttt{if (!ok)} blocks. The C recording path continues after
+balance updates with \texttt{commit}; any failure rolls back:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Commit only after
+insert succeeds; otherwise rollback.}]
+if (!ok) {
+    svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
+    if (err) *err = service_error_from_repo(&rerr);
+    return false;
+}
+if (!svc->tx_repo.vtable->commit(svc->tx_repo.ctx, &rerr)) {
+    svc->tx_repo.vtable->rollback(svc->tx_repo.ctx);
+    if (err) *err = service_error_from_repo(&rerr);
+    return false;
+}
+*out_id = new_id;
+return true;
+\end{lstlisting}
+
+Rust routes persistence through \texttt{record\_atomic} on the repository trait---one
+await that applies balance updates and insert inside a SQL transaction (details in
+Section~\ref{subsec:ch6sec1-1}):
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Trait method
+that wraps balance \texttt{UPDATE}s and row \texttt{INSERT} in one SQL transaction.}]
+async fn record_atomic(
+    &self,
+    updated_accounts: &[Account],
+    tx: &Transaction,
+) -> Result<TransactionId, RepoError>;
+
+// call site inside record_transaction:
+let id = self.tx_repo.record_atomic(&updated_accounts, &tx).await?;
+\end{lstlisting}
+
+The service method ends with a single \texttt{Ok(id)}.
+
+Login applies the same policy in both languages: invalid email format, missing user, and
+wrong password all map to the same message so the API does not reveal whether an address
+exists:
+
+\begin{lstlisting}[language=C, caption={user\_service.c --- Uniform
+\texttt{invalid credentials} on every failure path.}]
+if (!email_try_create(cmd->email, &email, &derr)) {
+    if (err) *err = service_error_validation("invalid credentials");
+    return false;
+}
+if (!repo_ok) {
+    if (err) *err = service_error_validation("invalid credentials");
+    return false;
+}
+if (rc != ARGON2_OK) {
+    if (err) *err = service_error_validation("invalid credentials");
+    return false;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={user.rs (service) --- Same three paths,
+same string.}]
+let email: Email = cmd.email.parse()
+    .map_err(|_| ServiceError::Validation("invalid credentials".into()))?;
+let user = self.user_repo.get_by_email(&email).await.map_err(|e| match e {
+    RepoError::NotFound(_) =>
+        ServiceError::Validation("invalid credentials".into()),
+    other => ServiceError::from(other),
+})?;
+if !valid {
+    return Err(ServiceError::Validation("invalid credentials".into()));
+}
+\end{lstlisting}
+
+Palmieri~\cite{Palmieri2022} treats unhandled service failures as production incidents
+waiting to happen. In C the risk is \textbf{silent success}; in Rust unused
+\texttt{Result} values trigger warnings and \texttt{?} makes propagation the default.
+Parallel analytics adds \texttt{ServiceError::Concurrency} when worker spawn or join
+fails---mechanics in Section~\ref{sec:ch5sec3}.
+
+\section{Concurrency Patterns}
+\label{sec:ch5sec3}
+
+Most Gentlix requests are sequential: one transfer, one account lookup. The heavy
+exception is \texttt{compute\_user\_statistics}, which loads transactions for every
+owned account, deduplicates by id, splits work across threads, and merges totals.
+Statement replay and Argon2 login also consume CPU time, but they use a different
+pattern---blocking the connection thread in C or \texttt{spawn\_blocking} in Rust
+(Section~\ref{subsec:ch6sec2-4}). This section explains the three mechanisms the
+analytics pipeline combines: \textbf{mutexes} for shared maps, \textbf{atomics} for
+global counters, and \textbf{thread lifetimes} for safe parallel slices.
+
+Both backends follow the same high-level design documented by Bos~\cite{Bos2023}:
+keep critical sections small, prefer local accumulation, merge under a lock once per
+worker. The difference is how much the language enforces.
+
+\subsection{Mutexes and shared maps}
+\label{subsec:ch5sec3mutex}
+
+A mutex ensures only one thread mutates shared data at a time. In analytics, per-type and
+per-day totals must not be updated concurrently without exclusion. Gentlix stores shared
+state in \texttt{StatsShared}:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Atomics hold
+global counters; mutexes protect richer maps.}]
+typedef struct StatsShared {
+    _Atomic int64_t total_incoming;
+    _Atomic int64_t total_outgoing;
+    _Atomic int64_t total_volume;
+    _Atomic int64_t transaction_count;
+
+    pthread_mutex_t per_type_mutex;
+    PerTypeTotals   per_type;
+
+    pthread_mutex_t per_day_mutex;
+    DayTotalMap     per_day;
+} StatsShared;
+\end{lstlisting}
+
+Each \texttt{stats\_worker\_fn} first accumulates into \textbf{thread-local} structures
+without locking, then merges once:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Locks are held
+only during the merge phase, not in the hot loop.}]
+pthread_mutex_lock(&s->per_type_mutex);
+for (size_t c = 0; c < TX_SERVICE_TYPE_COUNT; ++c) {
+    if (local_type.present[c]) {
+        s->per_type.totals[c] += local_type.totals[c];
+        s->per_type.present[c]  = true;
+    }
+}
+pthread_mutex_unlock(&s->per_type_mutex);
+\end{lstlisting}
+
+In C, the mutex and the data it protects live in separate fields---nothing forces a lock
+before access except discipline. \texttt{pthread\_mutex\_init} and
+\texttt{pthread\_mutex\_destroy} must run on every entry point. Rust wraps maps in
+\texttt{Arc<Mutex<HashMap<TransactionType, i64>>>} and
+\texttt{Arc<Mutex<BTreeMap<NaiveDate, i64>>>}; mutation without \texttt{lock()} does not
+compile:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- The mutex and
+map are one unit; the guard releases on drop.}]
+let mut map = per_type.lock().expect("poisoned mutex");
+*map.entry(*tx.transaction_type()).or_insert(0) += value;
+\end{lstlisting}
+
+For the map \emph{data structure} itself, C has no standard dictionary. Gentlix implements
+\texttt{DayTotalMap} as a growable array with linear search; Rust uses
+\texttt{BTreeMap<NaiveDate, i64>} from the standard library:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Ad hoc per-day map:
+linear scan, then merge under \texttt{per\_day\_mutex}.}]
+typedef struct DayTotalMap {
+    DayTotal *entries;
+    size_t    count;
+    size_t    capacity;
+} DayTotalMap;
+
+static bool day_total_map_add(DayTotalMap *m,
+                              int32_t date_key, int64_t amount) {
+    for (size_t i = 0; i < m->count; ++i) {
+        if (m->entries[i].date_key == date_key) {
+            m->entries[i].total += amount;
+            return true;
+        }
+    }
+    /* grow array and append new date_key ... */
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Standard
+map; mutex wraps updates in the worker loop.}]
+let per_day = Arc::new(Mutex::new(BTreeMap::<NaiveDate, i64>::new()));
+/* inside worker */
+let mut map = per_day.lock().expect("poisoned mutex");
+*map.entry(recorded.date_naive()).or_insert(0) += net;
+\end{lstlisting}
+
+After thread-local accumulation, C merges per-day totals under the same mutex pattern
+as per-type totals:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Per-day merge
+after the hot loop.}]
+pthread_mutex_lock(&s->per_day_mutex);
+for (size_t d = 0; d < local_day.count; ++d) {
+    day_total_map_add(&s->per_day,
+                      local_day.entries[d].date_key,
+                      local_day.entries[d].total);
+}
+pthread_mutex_unlock(&s->per_day_mutex);
+\end{lstlisting}
+
+Schreiner~\cite{Schreiner1993} would call the C structure a hand-rolled collection;
+the concurrency pattern is identical: local map first, shared map under mutex second.
+
+\subsection{Atomics and counter totals}
+\label{subsec:ch5sec3atomics}
+
+Global counters (\texttt{total\_incoming}, \texttt{total\_outgoing}, volume, transaction
+count) are updated from every worker simultaneously. C uses \texttt{\_Atomic int64\_t}
+with \texttt{memory\_order\_relaxed}; Rust uses
+\texttt{AtomicI64::fetch\_add(..., Ordering::Relaxed)}. Bos~\cite{Bos2023} explains that
+relaxed ordering suffices when each atomic accumulates independently and no other memory
+read depends on ordering---display totals in Gentlix, not ledger commits.
+
+The hot loop in C increments shared counters with relaxed atomics:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Relaxed atomics in
+the per-transaction loop.}]
+atomic_fetch_add_explicit(&s->transaction_count, 1, memory_order_relaxed);
+if (net > 0) {
+    atomic_fetch_add_explicit(&s->total_incoming, net,
+                              memory_order_relaxed);
+} else if (net < 0) {
+    atomic_fetch_add_explicit(&s->total_outgoing, -net,
+                              memory_order_relaxed);
+}
+\end{lstlisting}
+
+Rust mirrors the same arithmetic on \texttt{AtomicI64}:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same counters,
+same ordering.}]
+transaction_count.fetch_add(1, Ordering::Relaxed);
+if net > 0 {
+    total_incoming.fetch_add(net, Ordering::Relaxed);
+} else if net < 0 {
+    total_outgoing.fetch_add(-net, Ordering::Relaxed);
+}
+\end{lstlisting}
+
+Plain \texttt{int64\_t} shared across C threads without atomics would be a data race with
+undefined behaviour. Rust rejects unsynchronised \texttt{\&mut} sharing unless the type
+is \texttt{Sync}. McNamara~\cite{McNamara2021} contrasts this with manually reasoning about
+every load and store in C---the same numeric result when correct, a different proof burden.
+
+\subsection{Threads, scopes, and join discipline}
+\label{subsec:ch5sec3threads}
+
+Workers borrow slices of a parent-owned transaction array. C passes raw pointers into
+\texttt{pthread\_create}; the parent must \texttt{pthread\_join} every worker before
+\texttt{free\_tx\_array}:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Workers must finish
+before the shared array is freed.}]
+for (size_t t = 0; t < num_threads; ++t)
+    pthread_join(threads[t], NULL);
+free_tx_array(all_txs, all_count);
+\end{lstlisting}
+
+If \texttt{pthread\_create} fails halfway, Gentlix joins started threads, destroys mutexes,
+frees arrays, and returns a concurrency error:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Partial spawn
+cleanup before returning \texttt{SERVICE\_ERROR\_CONCURRENCY}.}]
+if (pthread_create(&threads[t], NULL, stats_worker_fn, &args[t]) != 0) {
+    for (size_t j = 0; j < t; ++j) pthread_join(threads[j], NULL);
+    free(args); free(threads); free_tx_array(all_txs, all_count);
+    if (err) *err = service_error_internal(
+        "failed to spawn statistics worker thread");
+    return false;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Join failure
+maps to \texttt{ServiceError::Concurrency}.}]
+stats_handle.await.map_err(|e|
+    ServiceError::Concurrency(format!("join error: {e}")))?;
+\end{lstlisting}
+
+Blackburn~\cite{Blackburn2025}
+classifies ``worker outlives buffer'' as temporal unsafe behaviour that can yield wrong
+dashboard totals under load.
+
+Rust uses \texttt{thread::scope} so workers cannot outlive the borrowed slice; join order
+is enforced by the API:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) ---
+\texttt{thread::scope} ties worker lifetimes to the transaction chunk.}]
+thread::scope(|scope| {
+    for chunk in all_transactions.chunks(chunk_size) {
+        scope.spawn(move || {
+            for tx in chunk { /* filters, atomics, mutex maps */ }
+        });
+    }
+});
+\end{lstlisting}
+
+\subsection{The analytics pipeline end-to-end}
+\label{subsec:ch5sec3pipeline}
+
+The three mechanisms above appear together in one flow. After loading rows per owned
+account, both backends deduplicate internal transfers before spawning workers. C sorts
+pointers by id and compacts duplicates in place:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Dedupe runs before
+any \texttt{pthread\_create} call.}]
+static size_t dedupe_transactions_by_id(Transaction **all_txs, size_t all_count) {
+    if (all_count <= 1) return all_count;
+    qsort(all_txs, all_count, sizeof(Transaction *), compare_tx_ptr_by_id);
+    size_t w = 1;
+    for (size_t i = 1; i < all_count; ++i) {
+        if (transaction_id(all_txs[i]).value ==
+            transaction_id(all_txs[w - 1]).value) {
+            transaction_free(all_txs[i]);   // drop duplicate
+        } else {
+            all_txs[w++] = all_txs[i];
+        }
+    }
+    return w;
+}
+\end{lstlisting}
+
+Rust fills a \texttt{HashMap<TransactionId, Transaction>} while iterating accounts:
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Last write wins
+for duplicate ids across account lists.}]
+let mut unique: HashMap<TransactionId, Transaction> = HashMap::new();
+for account in &accounts {
+    let txs = self.tx_repo.list_for_account(account.id().unwrap(),
+        per_account_limit, 0).await?;
+    for tx in txs {
+        if let Some(id) = tx.id() {
+            unique.entry(id).or_insert(tx);
+        }
+    }
+}
+\end{lstlisting}
+
+Dedupe stays single-threaded so parallel code never double-counts a row seen from two
+accounts. Each worker then applies the same date, type, and ownership filters before
+updating counters:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Filter logic in
+\texttt{stats\_worker\_fn} hot loop.}]
+time_t rec = transaction_recorded_on(tx);
+if (arg->has_from && rec < arg->from) continue;
+if (arg->has_to   && rec > arg->to)   continue;
+if (arg->has_tx_type &&
+    transaction_type_get(tx) != arg->filter_type) continue;
+bool to_owned = id_in_set(arg->user_ids, arg->user_count,
+                          transaction_to_account_id(tx).value);
+bool from_owned = id_in_set(arg->user_ids, arg->user_count,
+                            transaction_from_account_id(tx).value);
+int64_t net = (to_owned ? value : 0) - (from_owned ? value : 0);
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same filters
+inside the scoped worker.}]
+if let Some(f) = from { if recorded < f { continue; } }
+if let Some(t) = to   { if recorded > t { continue; } }
+if let Some(filter_type) = filters.transaction_type {
+    if *tx.transaction_type() != filter_type { continue; }
+}
+let net = (if to_owned { value } else { 0 })
+        - (if from_owned { value } else { 0 });
+\end{lstlisting}
+
+Palmieri~\cite{Palmieri2022} would classify the map key as a newtype
+(\texttt{TransactionId}) that prevents confusing ids with raw integers---the same id
+type used in Section~\ref{sec:ch5sec1}.
+
+Worker count follows \texttt{get\_processor\_count()} in C and
+\texttt{thread::available\_parallelism()} in Rust:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- Thread count from
+the host OS.}]
+static long get_processor_count(void) {
+#ifdef _WIN32
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return (long)info.dwNumberOfProcessors;
+#else
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? n : 1;
+#endif
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- Same intent.}]
+let num_threads = thread::available_parallelism()
+    .map(|n| n.get())
+    .unwrap_or(1);
+let chunk_size = (all_transactions.len() / num_threads).max(1);
+\end{lstlisting}
+
+Each worker applies date, type, and ownership filters, updates relaxed atomics, fills
+local maps, then merges under the mutexes from Section~\ref{subsec:ch5sec3mutex}.
+Rust wraps the entire CPU-heavy phase in \texttt{task::spawn\_blocking}; C runs analytics
+inline in the HTTP handler before the response is sent:
+
+\begin{lstlisting}[language=C, caption={transaction\_service.c --- No runtime offload;
+\texttt{pthread} workers run in the request thread's call stack.}]
+bool transaction_service_compute_user_statistics(
+    TransactionService *svc, UserId user_id,
+    int64_t per_account_limit, /* ... */, ServiceError *err)
+{
+    /* load accounts, dedupe, pthread_create / join, aggregate */
+}
+\end{lstlisting}
+
+\begin{lstlisting}[language=Rust, caption={transaction.rs (service) --- CPU work
+offloaded from the Tokio worker.}]
+let stats_handle = task::spawn_blocking(move || {
+    thread::scope(|scope| { /* workers */ });
+    ExtendedUserStatistics { /* ... */ }
+});
+stats_handle.await.map_err(|e|
+    ServiceError::Concurrency(format!("join error: {e}")))?;
+\end{lstlisting}
+
+Flitton and Morton~\cite{Flitton2023}
+warn that long CPU sections on a Tokio worker stall other async tasks---offloading is a
+runtime concern (Section~\ref{subsec:ch6sec2-4}), while mutex/atomic/thread rules in this
+section describe the algorithm both languages share.
+
+\section*{Summary}
+
+The three sections of this chapter show that Gentlix enforces banking correctness through
+types, explicit error chains, and a deliberate parallel aggregation design. In C, every
+invariant and every lock is a convention: validated email can still look like a raw
+string, \texttt{ServiceError *err} can be ignored, and mutex init/destroy must be remembered
+on each path. Rust moves much of that obligation to compile time---newtypes, \texttt{Result},
+\texttt{thread::scope}, and \texttt{Mutex<T>}---while implementing the same product rules.
+
+Database column indices and HTTP JSON envelopes are not repeated here; they belong to
+Chapter~\ref{sec:ch6sec1} and Section~\ref{subsec:ch6sec2-5}. The service layer assumes
+correct persistence and a faithful HTTP mapping; this chapter shows how the two backends
+justify that trust before a request leaves \texttt{service/}.

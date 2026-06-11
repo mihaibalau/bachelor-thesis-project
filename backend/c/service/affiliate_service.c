@@ -5,6 +5,13 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * Three ports wired into AffiliateService (each is vtable + ctx):
+ *   aff_repo     — affiliate rows
+ *   account_repo — join recipient account / currency matching
+ *   user_repo    — resolve target user by tag, full name for views
+ */
+
 static bool aff_repo_get_adapter(
     void *ctx,
     UserId owner_user_id,
@@ -163,9 +170,9 @@ AffSvcUserRepository aff_user_repository_from_repo(UserRepo *repo) {
 }
 
 struct AffiliateService {
-    AffiliateRepository     aff_repo;
-    AffSvcAccountRepository account_repo;
-    AffSvcUserRepository    user_repo;
+    AffiliateRepository     aff_repo;     // affiliate CRUD
+    AffSvcAccountRepository account_repo; // account lookups for views/send
+    AffSvcUserRepository    user_repo;    // tag → user resolution
 };
 
 AffiliateService *affiliate_service_new(AffiliateRepository     aff_repo,
@@ -457,6 +464,7 @@ bool affiliate_service_validate_send_target(
         return false;
     }
 
+    // 1. Load both accounts; recipient must be Regular with matching currency.
     Account  *from_acc = NULL, *to_acc = NULL;
     RepoError rerr;
 
@@ -494,6 +502,7 @@ bool affiliate_service_validate_send_target(
     account_free(from_acc);
     account_free(to_acc);
 
+    // 2. Recipient's user must appear in owner's affiliate list (by user, not sub-account id).
     Affiliate **affiliates = NULL;
     size_t      aff_count  = 0;
     if (!svc->aff_repo.vtable->list_for_owner(
@@ -599,6 +608,8 @@ bool affiliate_service_list_affiliates_view(
 
     size_t n = 0;
     if (params->for_send_currency_opt) {
+        /* Send-picker mode: one row per nickname, remapped to the recipient's
+         * Regular account in the requested currency (not the saved sub-account). */
         Currency want_curr;
         DomainError derr;
         if (!currency_from_str(params->for_send_currency_opt, &want_curr, &derr)) {
@@ -839,7 +850,7 @@ bool affiliate_service_resolve_target_by_tag(
         return false;
     }
 
-    // 3. Match currencies owner can send to.
+    // 3. Intersect: target's Regular accounts whose currency the owner also holds.
     bool owner_has[CURRENCY_COUNT] = { false };
     for (size_t i = 0; i < owner_n; ++i) {
         Currency c = account_currency(owner_accs[i]);

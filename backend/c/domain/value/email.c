@@ -11,7 +11,7 @@ bool email_try_create(const char *raw, Email *out, DomainError *err) {
         return false;
     }
 
-    // 1. Trim whitespace.
+    // Trim leading/trailing whitespace before validation.
     const char *start = raw;
     while (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')
         ++start;

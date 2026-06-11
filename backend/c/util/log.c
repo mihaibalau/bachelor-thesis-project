@@ -6,6 +6,8 @@
 #include <strings.h>
 #include <time.h>
 
+// Process-wide log config (set once in log_init, read on every LOG_* call).
+
 static LogLevel g_level = LOG_LEVEL_INFO;
 static bool g_json = false;
 static bool g_debug_mode = false;
@@ -42,6 +44,7 @@ static const char *level_name(LogLevel level) {
 }
 
 static void json_escape(const char *src, char *dst, size_t cap) {
+    // Escape user text so log lines stay valid JSON on one line.
     size_t j = 0;
     if (!src) {
         if (cap > 0) dst[0] = '\0';
@@ -71,7 +74,7 @@ static void json_escape(const char *src, char *dst, size_t cap) {
 }
 
 void log_init(void) {
-    // 1. Read env (SERVICE_NAME, DEBUG_MODE, LOG_LEVEL, LOG_FORMAT).
+    // Read env (SERVICE_NAME, DEBUG_MODE, LOG_LEVEL, LOG_FORMAT).
     const char *service = getenv("SERVICE_NAME");
     if (service && service[0]) {
         snprintf(g_service, sizeof g_service, "%s", service);
@@ -121,7 +124,7 @@ LogLevel log_get_level(void) {
 
 void log_write(LogLevel level, const char *event, const char *fmt, ...) {
     if (!event || !event[0]) event = "log";
-    // 1. Filter by configured level.
+    // Skip messages below configured level.
     if (level < g_level) return;
 
     char message[1024];

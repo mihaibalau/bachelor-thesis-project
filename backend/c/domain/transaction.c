@@ -70,7 +70,7 @@ static bool transaction_init(
     Transaction *out,
     DomainError *err
 ) {
-    // 1. Validate value, distinct accounts, non-empty description.
+    // Value >= 0, from != to, non-empty description.
     if (!out) {
         if (err) *err = domain_error_validation("Transaction is null");
         return false;

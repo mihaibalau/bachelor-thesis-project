@@ -1,0 +1,65 @@
+\chapter{Migrating from C to Rust}
+\label{chap:ch7}
+
+\par Gentlix was not produced by an automatic translator. The Rust backend was written 
+to mirror an existing C design: same schema, same routes, same JSON. This chapter 
+summarises why that manual path was necessary and what a developer moving from the C 
+codebase should expect cognitively.
+
+\section{The Cognitive Gap}
+\label{sec:ch7sec1}
+
+\par C programmers think in terms of pointers, explicit lifetimes, and conventions 
+the compiler does not enforce. Rust asks for ownership up front: every value has one 
+owner, references borrow for a limited time, and mutation through shared references 
+is restricted. The first weeks on Gentlix often produced borrow-checker errors on 
+seemingly reasonable code---for example, storing a reference to a row buffer that 
+outlives the database result.
+
+\par McNamara~\cite{McNamara2021} describes systems programming in Rust as learning to 
+work \emph{with} the compiler rather than fighting it. In Gentlix, \textbf{ownership} 
+replaced manual \texttt{malloc}/\texttt{free} in services and JSON building; 
+\textbf{traits} replaced hand-wired vtables but required \texttt{async\_trait} and 
+\texttt{Send} bounds on repositories; \textbf{async I/O} added \texttt{await} for 
+\texttt{sqlx} and \texttt{spawn\_blocking} for Argon2 and analytics---a different 
+model than libmicrohttpd's blocking threads even when the product behaviour matched.
+
+\par Flitton and Morton~\cite{Flitton2023} explain async migration pitfalls---blocking 
+\texttt{libpq} on Tokio tasks, or mixing \texttt{Send} bounds with legacy pointer APIs. 
+Drysdale~\cite{Drysdale2024} recommends learning \texttt{Result} and iterator patterns 
+before porting large C modules; Gentlix ported service traits first, then HTTP, then filled 
+in domain edge cases to match C JSON field-for-field.
+
+\par Palmieri~\cite{Palmieri2022} recommends introducing Rust incrementally in backend 
+teams. Gentlix effectively did the extreme version: a full rewrite of one backend 
+while keeping the C version as a reference implementation. That made comparisons fair 
+but doubled maintenance during development.
+
+\section{Automated Migration}
+\label{sec:ch7sec2}
+
+\par Tools such as \texttt{c2rust} can translate C syntax into Rust mechanically, but 
+the output is usually \texttt{unsafe}, idiomatically foreign, and still missing domain 
+structure. Gentlix relies on opaque pointers, vtables, and consistent error enums---patterns 
+Schreiner~\cite{Schreiner1993} documents well in C---none of which become safe Rust 
+modules without human redesign.
+
+\par Automated translation also cannot recover financial invariants. Cross-backend JWT 
+compatibility, integer-cent ledger rules, SQL transaction boundaries, and byte-for-byte 
+API parity required deliberate choices in both languages. A migrated skeleton might compile 
+after heavy \texttt{unsafe}, but it would not satisfy the non-functional requirements in 
+Chapter~\ref{sec:ch2sec1sub2} without the same service-layer work already present in 
+Gentlix.
+
+\par A realistic migration path for a similar project would look like Gentlix in reverse: 
+keep PostgreSQL and HTTP contracts fixed, port the domain and repository traits first, 
+wrap existing C only where needed, and replace hot paths after tests prove parity. Full 
+automation is useful for spotting structural gaps, not for shipping a banking API unchanged.
+
+\section*{Summary}
+
+\par Moving from Gentlix C to Gentlix Rust is feasible because the architecture was 
+layered from the start, but it is not free. The cognitive gap shows up in ownership, 
+async, and trait bounds; automated tools do not remove the need to re-prove safety and 
+API parity. The dual-backend repository is therefore both a comparison instrument and 
+a record of what a disciplined manual migration entails.

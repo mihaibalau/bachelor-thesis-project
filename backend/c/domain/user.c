@@ -103,7 +103,7 @@ static bool user_init(
     User *out,
     DomainError *err
 ) {
-    // 1. Normalize required fields; copy optional phone/birth_date.
+    // Normalize required fields; copy optional phone/birth_date.
     if (!out || !email) {
         if (err) *err = domain_error_validation("User: invalid arguments");
         return false;

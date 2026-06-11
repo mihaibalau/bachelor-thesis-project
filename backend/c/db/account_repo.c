@@ -10,6 +10,8 @@
 #include "../domain/include/iban.h"
 #include "../domain/include/error.h"
 
+// AccountRepo = SQL for accounts; same shared Db* as the other repos.
+
 struct AccountRepo {
     Db *db;
 };
@@ -92,7 +94,7 @@ static bool account_repo_row_to_domain(
 }
 
 bool account_repo_get_by_id(AccountRepo *repo, AccountId id, Account **out, RepoError *err) {
-    // 1. Query by id; map row to domain or NotFound.
+    // Query by id; map row to domain or NotFound.
     if (!repo || !out) {
         if (err) *err = repo_error_db("AccountRepo::get_by_id: invalid arguments");
         return false;
@@ -224,7 +226,7 @@ bool account_repo_list_for_user(
 }
 
 bool account_repo_insert(AccountRepo *repo, const Account *account, AccountId *out_id, RepoError *err) {
-    // 1. INSERT row; return generated id.
+    // INSERT row; return generated id.
     if (!repo || !account || !out_id) {
         if (err) *err = repo_error_db("AccountRepo::insert: invalid arguments");
         return false;

@@ -129,7 +129,7 @@ impl Transaction {
 
 
 fn normalize_required(s: String, field: &str) -> Result<String, DomainError> {
-    // 1. Trim whitespace; reject if nothing remains
+    // Trim whitespace; reject if nothing remains
     let v = s.trim().to_string();
     if v.is_empty() {
         return Err(DomainError::validation(format!("{field} must not be empty")));

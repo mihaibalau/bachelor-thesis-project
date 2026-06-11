@@ -4,6 +4,11 @@
 #include <string.h>
 #include <stdio.h>
 
+/*
+ * ServiceError = what business logic and HTTP handlers see.
+ * Built here from domain validation failures or mapped from RepoError.
+ */
+
 static void service_error_set_msg(ServiceError *err, const char *msg) {
     if (!msg) {
         err->message[0] = '\0';
@@ -71,6 +76,7 @@ ServiceError service_error_from_domain(const DomainError *derr) {
 }
 
 ServiceError service_error_from_repo(const RepoError *rerr) {
+    // Lift repository failures into service-layer codes (HTTP maps these next).
     ServiceError err;
     if (!rerr || rerr->code == REPO_ERROR_NONE) {
         return service_error_ok();

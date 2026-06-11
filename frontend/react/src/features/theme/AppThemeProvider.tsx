@@ -4,6 +4,7 @@ import type { PaletteMode } from '@mui/material';
 import { createAppTheme } from '../../theme.ts';
 import { ColorModeContext } from './ColorModeContext';
 
+// MUI theme + dark/light toggle; mode persisted in localStorage.
 export function AppThemeProvider({ children }: { children: ReactNode }) {
     const [mode, setMode] = useState<PaletteMode>(() => {
         const stored = localStorage.getItem('gentlix-color-mode');

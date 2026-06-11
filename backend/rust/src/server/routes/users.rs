@@ -91,7 +91,7 @@ async fn login_user(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Json<LoginResponse>> {
-    // 1. Delegate to service
+    // Delegate to service
     let cmd = LoginUserCommand {
         email: body.email,
         password: body.password,

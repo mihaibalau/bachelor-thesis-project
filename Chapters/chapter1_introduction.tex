@@ -1,0 +1,14 @@
+\chapter{Introduction}
+
+%\chapter*{Introducere}
+\label{intro}
+
+\par In this thesis I compare C and Rust for backend development by building a simulated financial application called Gentlix Bank. The system has a React frontend, a shared Dockerised PostgreSQL database, and two interchangeable backend APIs---one written in C and one in Rust---that implement the same business rules for users, accounts, affiliates, and transactions. Because both backends share one schema and one REST contract, the comparison stays focused on language and tooling rather than product differences.
+
+\par Financial backends are a demanding setting for this study. A bug can return HTTP 200 with wrong JSON, corrupt a balance, or break analytics that the user trusts on the dashboard. The thesis therefore looks at memory management, design patterns, safety on real Gentlix paths, library ecosystems, migration effort, and measured performance---not only at syntax, but at behaviour that matters in a banking-style application.
+
+\par The research follows a clear structure. Chapter~\ref{chap:ch2} presents Gentlix Bank as a product: features, user interface, database, and the target AWS deployment layout. Chapters~\ref{chap:ch3} and~\ref{chap:ch4} analyse how C and Rust express memory rules and object-oriented design patterns in the actual codebase. Chapter~\ref{chap:ch5} is the central safety chapter: type-driven invariants, error propagation, and concurrency on real paths such as transfers, statements, and analytics. Chapter~\ref{chap:ch6} compares libraries, schema-safe database access, and the shared REST API including pagination. Chapter~\ref{chap:ch7} discusses the cognitive gap and limits of automated migration. Chapter~\ref{chap:ch8} reports development-scale metrics, repository audit, build tooling, and local k6 benchmark results. Chapter~\ref{conclusions} summarises the trade-offs.
+
+\par The main contributions are: (i)~a full-stack prototype with two functionally equivalent backends, cross-backend JWT compatibility, and byte-for-byte API parity; (ii)~a systematic, code-level comparison of design and tooling decisions across both implementations; and (iii)~empirical evidence from a repository audit and from k6 workloads run locally against shared PostgreSQL (with AWS reserved as the target production environment).
+
+\par Performance measurements in Chapter~\ref{chap:ch8} were taken on a local Windows host with k6, one backend at a time on port~6767, so results are repeatable and comparable. The same application is designed to run behind an AWS load balancer with one EC2 instance per backend when deployed to the cloud; cloud benchmarks may be added later, but they are not required for the core argument of this thesis.

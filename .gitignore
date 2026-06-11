@@ -1,23 +1,48 @@
-/backend/rust/.idea
-/backend/rust/target
-/backend/c/.idea
-/backend/c/build
-/backend/c/cmake-build-debug
-backend/readme.md
+# --- IDE / OS ---
+.idea/
+.vscode/
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
 
-# Secrets — use .env.example as a template
+# --- Secrets (commit .env.example templates only) ---
 .env
+.env.*
+!.env.example
+infra/.env
 backend/rust/.env
 backend/c/.env
 frontend/react/.env
 frontend/react/.env.local
-/backend/c/build-review
-/backend/c/build-warn
-.review_c_build.txt
-.review_c_cmake.txt
-.review_c_warn.txt
-.review_rust_build.txt
-.review_rust_clippy.txt
-backend/c/.env
-backend/c/.env.example
-backend/c/.env
+
+# --- Rust backend ---
+backend/rust/target/
+backend/rust/.sqlx/
+backend/rust/.idea/
+
+# --- C backend ---
+backend/c/build/
+backend/c/build-review/
+backend/c/build-warn/
+backend/c/cmake-build-*/
+backend/c/.idea/
+
+# --- Frontend (see also frontend/react/.gitignore) ---
+frontend/react/node_modules/
+frontend/react/dist/
+
+# --- Local review notes ---
+.review_*.txt
+
+# --- LaTeX thesis build artifacts ---
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+
+# --- Benchmark k6 output ---
+backend/benchmark/results/*.json

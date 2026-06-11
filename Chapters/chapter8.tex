@@ -1,0 +1,214 @@
+\chapter{Real-World Performance}
+\label{chap:ch8}
+
+\par Performance in Gentlix has two faces: how much code each backend needs to maintain 
+(the development cost) and how fast it responds under realistic workloads (execution 
+cost). Safety tooling and library choices from earlier chapters are not free; this chapter 
+measures whether the Rust backend pays a visible price on the same machine and schema 
+as the C backend.
+
+\section{Development Performance}
+\label{sec:ch8sec1}
+
+\par Both backends implement the same product surface, yet the C tree is larger and carries 
+more manual verification work. This section reports lines of code by layer, a Phase~1 
+repository audit of safety obligations, and how each language's build system affects 
+reproducibility and undefined-behaviour risk.
+
+\subsection{Source size by architectural layer}
+\label{subsec:ch8sec1loc}
+
+\par Table~\ref{tab:loc_by_layer} groups source lines by architectural layer (excluding 
+build artefacts). Domain logic is similar in size because business rules align; the gap 
+widens in repository, service, and HTTP layers where C hand-rolls libpq mapping, JSON, 
+JWT, and dashboard aggregation.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|r|r|r|}
+\hline
+\textbf{Layer} & \textbf{C (lines)} & \textbf{Rust (lines)} & \textbf{$\Delta$} \\
+\hline
+Domain & 983 & 737 & +246 \\
+Repository / DB & 1\,494 & 871 & +623 \\
+Service & 3\,651 & 1\,996 & +1\,655 \\
+HTTP / server & 2\,057 & 1\,477 & +580 \\
+\hline
+\textbf{Total} & \textbf{8\,185} & \textbf{5\,081} & \textbf{+3\,104} \\
+\hline
+\end{tabular}
+\caption{Source lines per layer in Gentlix (Phase~1 audit)}
+\label{tab:loc_by_layer}
+\end{table}
+
+\par The C \texttt{dashboard\_service} and analytics sections in \texttt{transaction\_service.c} 
+account for much of the service-layer gap---parallel aggregation, hand-built maps, and JSON 
+serialisation that Rust expresses with fewer lines plus standard collections.
+
+\subsection{Repository audit: manual safety obligations}
+\label{subsec:ch8sec1audit}
+
+\par To quantify review load, both trees were scanned for patterns C must verify manually 
+but safe Rust handles through types or crates (excluding build artefacts). Table~\ref{tab:audit_obligations} 
+should be read as \emph{verification effort}, not typing speed.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|r|r|}
+\hline
+\textbf{Metric} & \textbf{C backend} & \textbf{Rust backend} \\
+\hline
+Source files (.c/.h vs .rs) & 78 & 39 \\
+Lines of source & 8\,185 & 5\,081 \\
+\texttt{malloc} call sites & 19 & 0 (via \texttt{Box}/\texttt{Vec}) \\
+\texttt{free} call sites & 152 & 0 (\texttt{Drop}) \\
+Explicit NULL checks / uses & 198 & 0 (\texttt{Option}) \\
+\texttt{unsafe} blocks & n/a & 0 in audited modules \\
+Hand-rolled JWT (lines) & $\sim$294 & $\sim$62 (crate + middleware) \\
+\texttt{PQgetvalue} column reads & 29 & 0 (\texttt{sqlx} macros) \\
+Compile-time SQL macros & 0 & 29 \\
+\hline
+\end{tabular}
+\caption{Manual safety obligations in Gentlix (Phase~1 repository audit)}
+\label{tab:audit_obligations}
+\end{table}
+
+\par Every schema or API change in C must re-check those sites; Rust more often fails the 
+build when a query or handler signature drifts (Chapter~\ref{subsec:ch6sec1-2}). Representative 
+defect injections on real Gentlix paths---statement replay bounds, swapped identifiers, 
+wrong column indices---compiled in C and could yield HTTP~200 with wrong financial data; 
+the same changes in Rust typically failed to compile or panicked in a controlled way 
+(Blackburn~\cite{Blackburn2025}).
+
+\subsection{Build systems and reproducibility}
+\label{subsec:ch8sec1build}
+
+\par \textbf{C / CMake.} The C backend links \texttt{libpq}, libmicrohttpd, jansson, OpenSSL, 
+and Argon2 through \texttt{find\_library} in \texttt{CMakeLists.txt}. Missing libraries fail 
+at link time; wrong versions may only appear at runtime on a new machine. Header guards and 
+include paths enforce layer boundaries by convention, not by the build graph.
+
+\begin{lstlisting}[language=make, caption={CMakeLists.txt (excerpt) --- Each dependency
+must be discovered on the host or in the Docker build stage.}]
+find_library(LIBMICROHTTPD NAMES microhttpd REQUIRED)
+find_library(LIBSSL NAMES ssl REQUIRED)
+find_library(LIBCRYPTO NAMES crypto REQUIRED)
+find_library(LIBARGON2 NAMES argon2 REQUIRED)
+\end{lstlisting}
+
+\par Gatchell~\cite{Gatchell2003} reminds C teams that build scripts and link lines are part 
+of the safety story---a backend that compiles against the wrong OpenSSL header set can pass 
+tests yet fail JWT verification in production.
+
+\par \textbf{Rust / Cargo.} Dependencies live in \texttt{Cargo.toml}; \texttt{Cargo.lock} 
+pins versions for reproducible CI and Docker builds. \texttt{cargo build} fetches crates, 
+compiles, and links without a separate package manager step on the developer machine. 
+McNamara~\cite{McNamara2021} notes that Cargo's unified workflow is one reason Rust services 
+start small quickly; Gentlix still spent time aligning JSON field names with C, but rarely 
+on link errors for missing JWT libraries.
+
+\par Module folders (\texttt{domain/}, \texttt{db/}, \texttt{service/}, \texttt{server/}) 
+mirror the C header boundaries from Chapter~\ref{sec:ch4sec5}. \texttt{sqlx} offline data 
+in \texttt{.sqlx/} lets builds run without a live PostgreSQL instance---trading setup 
+complexity for compile-time schema checks described in Section~\ref{subsec:ch6sec1-2}.
+
+\subsection{Undefined behaviour versus defined panics}
+\label{subsec:ch8sec1ub}
+
+\par In C, integer overflow, out-of-bounds access, null dereference, and data races are 
+undefined behaviour; optimisers may assume they never happen. In a ledger, silent wraparound 
+or torn reads are worse than a crash. Gentlix uses explicit guards on \texttt{int64\_t} 
+arithmetic in C and \texttt{checked\_mul} / validation in Rust for sensitive paths 
+(Section~\ref{sec:ch5sec1}).
+
+\par Safe Rust defines panics for bounds failures and rejects data races at compile time 
+when sharing rules are violated (Chapter~\ref{sec:ch5sec3}). Drysdale~\cite{Drysdale2024} 
+treats \texttt{unsafe} as an explicit audit surface; Gentlix's audited application modules 
+contain no \texttt{unsafe} blocks, so memory and aliasing rules stay in the checked subset 
+during development and benchmarks.
+
+\subsection{Developer experience in practice}
+\label{subsec:ch8sec1experience}
+
+\par Qualitatively, the C backend required more custom infrastructure before feature work 
+could start (\texttt{Db}, JWT, maps, mutex analytics). Rust reached feature parity faster 
+after the borrow-checker learning curve but needed repeated passes to match C JSON exactly. 
+Palmieri~\cite{Palmieri2022} describes that curve as front-loaded: once types encode the 
+domain, changes become safer but not always faster to write than editing C strings.
+
+\section{Execution Performance}
+\label{sec:ch8sec2}
+
+\subsection{Methodology}
+\label{subsec:ch8sec2method}
+
+\par Execution benchmarks use \textbf{k6} on a local Windows host against 
+\texttt{http://localhost:6767}. PostgreSQL runs in Docker with migration scripts 
+\texttt{001}--\texttt{003} and the benchmark seed (\(\sim\)100\,000 transactions for user 
+\texttt{gentlix@benchmark.com}). Only \textbf{one backend runs at a time} on port~6767; 
+each workload runs three times; reported values are the \textbf{median} of those runs.
+
+\par Each script uses \textbf{15~s warmup} and \textbf{30~s steady} load. Workloads mirror 
+real product paths:
+
+\begin{itemize}
+  \item \textbf{W1 (login)} --- 32 virtual users, \texttt{POST /api/users/login} (Argon2id);
+  \item \textbf{W2 (statement)} --- 8 VUs, \texttt{GET /api/transactions/statement} with date filter;
+  \item \textbf{W3 (analytics)} --- 8 VUs, \texttt{GET /api/transactions/summary/monthly?per\_account\_limit=200000};
+  \item \textbf{W4 (transfer)} --- 16 VUs, \texttt{POST /api/transactions/transfer} (1 cent between owned accounts; database re-seeded between run batches).
+\end{itemize}
+
+\par Scripts and result summarisation live in \texttt{backend/benchmark/} in the repository. 
+AWS deployment (Chapter~\ref{sec:ch2sec4}) is the production target; cloud benchmarks were 
+not run for this thesis but could reuse the same k6 scripts against a load balancer URL.
+
+\subsection{Measurement caveat}
+\label{subsec:ch8sec2caveat}
+
+\par During measurement the C backend ran as an optimised release-style binary; the Rust 
+backend was started with \texttt{cargo run} (debug profile by default). That asymmetry 
+favours C on CPU-heavy workloads and should be kept in mind when reading Table~\ref{tab:k6_results}. 
+A follow-up with \texttt{cargo run --release} on AWS would narrow the build-mode gap.
+
+\subsection{Results}
+\label{subsec:ch8sec2results}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|c|r|r|r|r|}
+\hline
+\textbf{Wkld} & \textbf{Conc.} & \textbf{C p95 (ms)} & \textbf{Rust p95 (ms)} &
+\textbf{C rps} & \textbf{Rust rps} \\
+\hline
+W1 Login & 32 & 2\,013 & 3\,839 & 25.9 & 14.5 \\
+W2 Statement & 8 & 1\,928 & 3\,495 & 5.0 & 3.2 \\
+W3 Analytics & 8 & 2\,699 & 7\,310 & 3.3 & 1.6 \\
+W4 Transfer & 16 & 247 & 1\,089 & 115.9 & 69.1 \\
+\hline
+\end{tabular}
+\caption{Median k6 results on local Windows host (shared PostgreSQL, one backend at a time)}
+\label{tab:k6_results}
+\end{table}
+
+\par On this setup \textbf{C leads on both tail latency (p95) and throughput (rps)} for 
+every workload. W1 highlights CPU-bound login on connection threads versus Rust's blocking 
+pool and async stack overhead (Section~\ref{subsec:ch6sec2-4}). W2 and W3 stress 
+statement replay and parallel analytics from Chapter~\ref{sec:ch5sec3}; Rust's 
+\texttt{spawn\_blocking} and \texttt{sqlx} async path add cost even when safety improves. 
+W4 is the lightest database write path; C's lower p95 fits a small transfer with minimal 
+allocation work in release mode.
+
+\par These numbers do \emph{not} mean C is the better language for new FinTech backends in 
+general. They show that, \textbf{for this prototype on this hardware}, the safety and 
+abstraction choices in Rust had a measurable runtime cost, while the C backend carried 
+a larger manual verification load (Tables~\ref{tab:audit_obligations} 
+and~\ref{tab:loc_by_layer}). Production decisions would combine both tables with team 
+experience, tooling, and deployment environment---including a fair release-vs-release 
+comparison on AWS if time allows.
+
+\section*{Summary}
+
+\par Gentlix trades manual safety effort for raw speed in C, and compiler-checked structure 
+for higher local latency in Rust on the measured workloads. Development metrics and k6 
+results should be read together: the language that reduces audit burden is not automatically 
+the language that wins every benchmark on a developer laptop.

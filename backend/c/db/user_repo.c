@@ -9,6 +9,11 @@
 #include "../domain/include/error.h"
 #include "../domain/include/email.h"
 
+/*
+ * UserRepo = SQL access for users. Holds a Db* (shared PGconn).
+ * Outbound: domain User*; inbound: domain User for inserts/updates.
+ */
+
 struct UserRepo {
     Db *db;
 };
@@ -56,6 +61,7 @@ static bool user_repo_row_to_domain(
     User **out,
     RepoError *err
 ) {
+    // Column order must match SELECT list in every query using this mapper.
     int col = 0;
 
     const char *id_s          = PQgetvalue(res, row, col++);
@@ -180,7 +186,7 @@ bool user_repo_get_by_tag(UserRepo *repo, const char *tag, User **out, RepoError
 }
 
 bool user_repo_insert(UserRepo *repo, const User *user, UserId *out_id, RepoError *err) {
-    // 1. INSERT row; return generated id.
+    // INSERT row; return generated id.
     if (!repo || !user || !out_id) {
         if (err) *err = repo_error_db("UserRepo::insert: invalid arguments");
         return false;
@@ -361,6 +367,7 @@ bool user_repo_delete(UserRepo *repo, UserId id, RepoError *err) {
     return true;
 }
 
+// Tx control: forwarded to Db — same PGconn as account/transaction repos.
 bool user_repo_begin(UserRepo *repo, RepoError *err) {
     if (!repo) {
         if (err) *err = repo_error_db("UserRepo::begin: invalid arguments");

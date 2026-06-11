@@ -374,6 +374,7 @@ static enum MHD_Result handle_transaction_summary(AppState *state, struct MHD_Co
     const char *account_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "account_id");
     const char *type_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "transaction_type");
 
+    // Default date range: start of current UTC month → now.
     time_t now = time(NULL);
     struct tm now_tm;
 #ifdef _WIN32
@@ -493,6 +494,7 @@ static enum MHD_Result handle_transaction_summary(AppState *state, struct MHD_Co
         json_object_set_new(net_o, "net_cents", json_integer((json_int_t)value));
         json_array_append_new(daily_net, net_o);
 
+        // daily_net uses signed net; cumulative spending sums only outflows (negative net).
         int64_t spending = value < 0 ? -value : 0;
         cumulative += spending;
         json_t *o = json_object();
@@ -562,7 +564,7 @@ static enum MHD_Result handle_monthly_summary(AppState *state, struct MHD_Connec
     const char *limit_s = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "per_account_limit");
     int64_t per_account_limit = limit_s ? (int64_t)strtoll(limit_s, NULL, 10) : 500;
 
-    // 1. Compute current UTC month [start, end] and pass to service.
+    // Current UTC month [start, end] for the stats query.
     time_t now = time(NULL);
     struct tm now_tm;
 #ifdef _WIN32

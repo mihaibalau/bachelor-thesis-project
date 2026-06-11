@@ -1,5 +1,9 @@
 #include "include/http_error.h"
 
+/*
+ * Last hop before JSON: ServiceError code → HTTP status + {status,code,message}.
+ * Keeps handlers free of switch/case on error kinds.
+ */
 ApiErrorBody http_error_from_service_error(const ServiceError *err) {
     ApiErrorBody body;
 

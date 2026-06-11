@@ -207,7 +207,7 @@ impl TryFrom<TransactionRow> for Transaction {
     type Error = DomainError;
 
     fn try_from(row: TransactionRow) -> Result<Self, Self::Error> {
-        // 1. Parse transaction type, then rehydrate with DB id
+        // Parse transaction type, then rehydrate with DB id
         let id = TransactionId(row.id);
 
         let from_account_id = AccountId(row.from_account_id);

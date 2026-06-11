@@ -46,6 +46,8 @@ bool iban_try_create(const char *raw, IBAN *out, DomainError *err) {
     return true;
 }
 
+// IBAN check digits: treat BBAN+country as a big integer mod 97 (ISO 13616).
+// Letters expand to two digits (A→10 … Z→35); we fold digit-by-digit to stay in uint64.
 static uint64_t mod97_str(const char *s) {
     uint64_t acc = 0;
     for (; *s; ++s) {
@@ -84,6 +86,7 @@ bool iban_generate(IBAN *out, DomainError *err) {
     snprintf(bban, sizeof bban, "%s%s%s", bank_code, branch, account);
 
     char raw[32];
+    // Rearrange to BBAN+country+"00" so mod97 yields the check digits.
     snprintf(raw, sizeof raw, "%s%s00", bban, country);
 
     int check_digits = (int)(98 - mod97_str(raw));

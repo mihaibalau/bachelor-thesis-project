@@ -6,6 +6,7 @@ export function fetchAccountAvailability(): Promise<AccountAvailabilityResponse>
     return apiClient.get<AccountAvailabilityResponse>('/accounts/availability');
 }
 
+// Single account by id (detail page).
 export function fetchAccount(id: number): Promise<Account> {
     return apiClient.get<Account>(`/accounts/${id}`);
 }

@@ -9,6 +9,8 @@
 #include <windows.h>
 #endif
 
+// Loads KEY=VALUE pairs into the process env (Rust dotenv equivalent).
+
 // Update CRT env block (_putenv on Windows so getenv() sees changes).
 static void set_env_var(const char *key, const char *value) {
     if (!key || !*key || !value) return;
@@ -44,7 +46,7 @@ static void strip_quotes(char *s) {
 }
 
 bool load_dotenv(const char *path) {
-    // 1. Open file and parse KEY=VALUE lines.
+    // Open file and parse KEY=VALUE lines.
     FILE *f = fopen(path, "r");
     if (!f) return false;
 
@@ -74,8 +76,8 @@ bool load_dotenv(const char *path) {
 }
 
 bool load_dotenv_first(const char *const *paths, size_t count) {
-    if (!paths) return false;
-    for (size_t i = 0; i < count; ++i) {
+    // Try paths in order; first file that opens wins.
+    if (!paths) return false;    for (size_t i = 0; i < count; ++i) {
         if (paths[i] && load_dotenv(paths[i])) {
             return true;
         }
@@ -85,8 +87,8 @@ bool load_dotenv_first(const char *const *paths, size_t count) {
 
 bool load_dotenv_near_executable(void) {
 #ifdef _WIN32
-    char exe_path[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, exe_path, (DWORD)sizeof exe_path);
+    // CLion/cmake-build-debug: .env sits next to c.exe, not in cwd.
+    char exe_path[MAX_PATH];    DWORD n = GetModuleFileNameA(NULL, exe_path, (DWORD)sizeof exe_path);
     if (n == 0 || n >= sizeof exe_path) return false;
 
     char *slash = strrchr(exe_path, '\\');

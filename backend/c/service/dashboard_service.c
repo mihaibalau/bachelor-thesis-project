@@ -11,6 +11,11 @@
 #include <time.h>
 #include <math.h>
 
+/*
+ * DashboardService orchestrates other services (no own DB port).
+ * Holds pointers to UserService, TransactionService, AffiliateService only.
+ */
+
 // Format time_t + microseconds as RFC3339 UTC, matching chrono's to_rfc3339()
 // "AutoSi" sub-second rule (see http_transactions.c).
 static void rfc3339_utc(time_t t, long micros, char *buf, size_t buf_size) {
@@ -34,6 +39,7 @@ static void rfc3339_utc(time_t t, long micros, char *buf, size_t buf_size) {
 
 static time_t utc_civil_to_time_h(int year, int month, int day,
                                   int hour, int min, int sec) {
+    // Proleptic Gregorian civil date → UTC epoch (no local TZ).
     int y = year;
     y -= (month <= 2);
     int era = (y >= 0 ? y : y - 399) / 400;
@@ -65,6 +71,7 @@ static const char *weekday_short(int wday) {
     return names[wday];
 }
 
+// Payment descriptions: "Payment | category: X | merchant: Y | note: Z" (pipe-separated).
 static void parse_payment_fields(const char *description, char *merchant, size_t merchant_sz,
                                  char *category, size_t category_sz) {
     snprintf(merchant, merchant_sz, "Payment");
@@ -96,6 +103,7 @@ static void parse_payment_fields(const char *description, char *merchant, size_t
     }
 }
 
+// Map tx type (+ payment category heuristics) to a UI icon bucket.
 static const char *ui_category(TransactionType t, const char *payment_category, const char *description) {
     if (t == TRANSACTION_TYPE_WITHDRAWAL) return "atm";
     if (t == TRANSACTION_TYPE_SEND || t == TRANSACTION_TYPE_TRANSFER) return "transfer";
@@ -146,6 +154,8 @@ static void map_activity_item(
         if (owned[i].value == to.value)   to_owned = true;
     }
 
+    /* Signed amount from the user's perspective: + if money arrives at an owned
+     * account from outside, − if it leaves an owned account. */
     int64_t amount_cents = 0;
     if (to_owned && !from_owned) amount_cents = transaction_value_cents(tx);
     else if (from_owned) amount_cents = -transaction_value_cents(tx);
@@ -337,6 +347,7 @@ bool dashboard_service_get(
     int prev_next_year      = (prev_month == 12) ? prev_year + 1 : prev_year;
     time_t prev_end         = utc_civil_to_time_h(prev_next_year, prev_next_month, 1, 0, 0, 0) - 1;
 
+    // Stats for current and previous UTC month (MoM comparison).
     UserTransactionStatistics cur_stats, prev_stats;
     if (!transaction_service_compute_user_statistics(
             svc->tx_svc, user_id, 500, true, month_start, true, month_end, &cur_stats, err)) {
@@ -355,6 +366,7 @@ bool dashboard_service_get(
     }
 
     int64_t net_change = cur_stats.total_incoming_cents - cur_stats.total_outgoing_cents;
+    // Implied balance at month start = today's total minus this month's net flow.
     int64_t balance_at_start = total_balance_cents - net_change;
     double balance_change_percent = percent_change(net_change, balance_at_start);
 

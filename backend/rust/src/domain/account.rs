@@ -59,7 +59,7 @@ impl Account{
         balance_cents: i64,
         iban: IBAN,
     ) -> Result<Self, DomainError> {
-        // 1. Reject negative opening balance
+        // Reject negative opening balance
         if balance_cents < 0 {
             return Err(DomainError::validation("Balance must be >= 0"));
         }

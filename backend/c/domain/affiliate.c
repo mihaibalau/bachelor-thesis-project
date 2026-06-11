@@ -59,7 +59,7 @@ Affiliate *affiliate_new(
         return NULL;
     }
 
-    // 1. Set ids and validate nickname.
+    // Normalize nickname (required, trimmed).
     a->owner_user_id = owner_user_id;
     a->recipient_sub_account_id = recipient_sub_account_id;
 

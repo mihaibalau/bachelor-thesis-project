@@ -6,7 +6,11 @@
 #include <string.h>
 #include <stdio.h>
 
-// AccountRepo -> AccountServiceRepository adapter (vtable + ctx).
+// AccountRepo -> AccountServiceRepository port (vtable + ctx).
+/*
+ * AccountService only sees methods on AccountServiceRepositoryVTable.
+ * The adapter layer hides libpq/SQL — same role as Rust dyn AccountRepository.
+ */
 
 static bool acct_repo_list_for_user_adapter(
     void *ctx,
@@ -87,7 +91,7 @@ AccountServiceRepository account_service_repository_from_repo(AccountRepo *repo)
 
 
 struct AccountService {
-    AccountServiceRepository repo;
+    AccountServiceRepository repo; // single port; ctx points at AccountRepo*
 };
 
 AccountService *account_service_new(AccountServiceRepository repo) {
@@ -259,7 +263,7 @@ bool account_service_open_account_raw(
         return false;
     }
 
-    // 4. Generate a unique IBAN, build the Account and persist it.
+    // 4. Generate a unique IBAN (retry on collision), then persist.
     const int MAX_RETRIES = 5;
     for (int attempt = 0; attempt < MAX_RETRIES; ++attempt) {
         IBAN iban;
@@ -324,7 +328,7 @@ bool account_service_get_account_availability(
         for (size_t c = 0; c < CURRENCY_COUNT; ++c)
             out->available[t][c] = true;
 
-    // 2. Mark owned (type, currency) pairs unavailable.
+    // Mark owned (type, currency) pairs unavailable.
     Account **accounts = NULL;
     size_t    count    = 0;
     RepoError rerr;

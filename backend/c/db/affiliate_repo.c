@@ -7,6 +7,8 @@
 #include "../util/include/util_str.h"
 #include "../domain/include/error.h"
 
+// AffiliateRepo = SQL for owner→recipient links; shared Db* with other repos.
+
 struct AffiliateRepo {
     Db *db;
 };
@@ -187,7 +189,7 @@ bool affiliate_repo_insert(
     const Affiliate *affiliate,
     RepoError *err
 ) {
-    // 1. INSERT affiliate row.
+    // INSERT affiliate row.
     if (!repo || !affiliate) {
         if (err) *err = repo_error_db("AffiliateRepo::insert: invalid arguments");
         return false;

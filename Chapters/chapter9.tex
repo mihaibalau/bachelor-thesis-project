@@ -1,0 +1,49 @@
+\chapter{Conclusions}
+\label{conclusions}
+
+\par This thesis compared C and Rust by building Gentlix Bank twice: one React frontend, 
+one PostgreSQL schema, and two interchangeable backends that implement the same 22 REST 
+routes, JWT format, and banking rules. That setup made it possible to study memory management, 
+design patterns, safety, tooling, migration effort, and performance on equal product terms 
+rather than on toy programs.
+
+\par \textbf{Memory and architecture.} Chapter~\ref{chap:ch3} showed that C gives full 
+control at the price of manual allocation, NULL discipline, and lifetime tracking. Rust 
+moves many failure modes to compile time through ownership, borrowing, and \texttt{Option}. 
+For a ledger application, the relevant question is not only whether the program crashes, 
+but whether it can corrupt data silently---a theme developed fully in Chapter~\ref{chap:ch5}.
+
+\par \textbf{Design patterns.} Chapter~\ref{chap:ch4} demonstrated that both languages 
+can implement encapsulation, polymorphic repositories, composition, and layered architecture. 
+In C these are conventions enforced by headers and review; in Rust they are language rules 
+(\texttt{pub}, \texttt{impl}, traits, module boundaries). The architectures match; the 
+verification story differs.
+
+\par \textbf{Safety and concurrency.} Chapter~\ref{chap:ch5} showed that Rust reduces manual 
+obligations---152 \texttt{free} sites, 198 nullable uses, hand-rolled JWT, manual column 
+reads in C versus \texttt{Option}, \texttt{Drop}, crates, and \texttt{sqlx} macros in Rust 
+(Table~\ref{tab:audit_obligations})---while preserving the same financial behaviour when 
+both backends follow SQL transactions and domain checks. Statement replay and parallel 
+analytics illustrate where mutex discipline and thread join order matter for correct dashboard 
+numbers, not only for crash-free operation.
+
+\par \textbf{Ecosystem and API.} Chapter~\ref{chap:ch6} documented how \texttt{libpq} column 
+indices versus \texttt{sqlx} macros shape schema safety, and how pagination on the statement 
+endpoint (\texttt{limit}, \texttt{offset}, \texttt{total\_count}) is part of the shared 
+contract both backends must honour.
+
+\par \textbf{Development and runtime performance.} Chapter~\ref{chap:ch8} combined LOC and 
+audit tables with build-system comparison and local k6 benchmarks. C led on latency and 
+throughput on the tested machine while Rust carried lower manual verification load.
+
+\par \textbf{Future work.} Fair release-mode Rust benchmarks, repeated runs on AWS behind 
+the load balancer described in Chapter~\ref{sec:ch2sec4}, and expanded automated tests on 
+both backends would strengthen the performance chapter. Further work could also explore 
+formal sanitiser runs on the C tree and gradual replacement of individual C modules rather 
+than a full dual implementation.
+
+\par In summary, Gentlix Bank supports a practical conclusion: Rust and C can deliver the 
+same online banking experience, but they distribute correctness work differently---C toward 
+runtime discipline and review, Rust toward compile-time proof and ecosystem support---and 
+teams modernising a C backend should weigh both the safety audit savings and the measured 
+runtime cost in their own deployment context.

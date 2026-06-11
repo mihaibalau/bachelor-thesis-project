@@ -1,0 +1,3 @@
+# k6 JSON output — keep this directory in git
+*.json
+!.gitkeep

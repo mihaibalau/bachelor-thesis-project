@@ -13,7 +13,7 @@ bachelor-thesis-project/
 │   ├── c/                   # libmicrohttpd REST API (port 6767, same routes)
 │   └── LOGGING.md           # Shared logging contract (both backends)
 ├── frontend/
-│   └── react/               # Vite + React + MUI user app (port 5173)
+│   └── react/               # Vite + React + MUI user app — see frontend/react/README.md
 ├── infra/
 │   └── docker-compose.yml   # PostgreSQL + optional backend/frontend images
 └── deploy/

@@ -2,8 +2,12 @@
 #include <microhttpd.h>
 #include "include/http_router.h"
 
+/*
+ * http_request_handler is registered here; AppState* travels as void* cls
+ * and is cast back inside the router on every request.
+ */
 bool http_server_start(struct HttpServer *srv, AppState *state, unsigned short port) {
-    // 1. Start libmicrohttpd daemon with http_request_handler.
+    // Start libmicrohttpd daemon with http_request_handler.
     srv->daemon = MHD_start_daemon(
         MHD_USE_SELECT_INTERNALLY,
         port,
@@ -15,7 +19,7 @@ bool http_server_start(struct HttpServer *srv, AppState *state, unsigned short p
 }
 
 void http_server_stop(struct HttpServer *srv) {
-    // 1. Stop daemon if running.
+    // Stop daemon if running.
     if (srv->daemon) {
         MHD_stop_daemon(srv->daemon);
         srv->daemon = NULL;

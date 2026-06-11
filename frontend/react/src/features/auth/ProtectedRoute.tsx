@@ -6,6 +6,7 @@ import { useAuth } from './AuthContext';
 export function ProtectedRoute({ children }: { children: ReactNode }) {
     const { token, isReady } = useAuth();
 
+    // Wait for persisted auth to hydrate before redirecting.
     if (!isReady) {
         return (
             <Box
@@ -23,6 +24,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
     }
 
     if (!token) {
+        // No session — send to login.
         return <Navigate to="/login" replace />;
     }
 

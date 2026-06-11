@@ -43,7 +43,12 @@ static size_t dedupe_transactions_by_id(Transaction **all_txs, size_t all_count)
     return w;
 }
 
-// Repo adapters (DB -> abstract interfaces).
+// Repo adapters: concrete *Repo -> service-layer ports (vtable + ctx).
+/*
+ * TransactionService talks to two ports:
+ *   tx_repo      — transaction rows + BEGIN/COMMIT on shared Db*
+ *   account_repo — balance reads/writes during record_transaction
+ */
 
 static bool tx_repo_get_by_id_adapter(
     void *ctx, TransactionId id, Transaction **out, RepoError *err)
@@ -127,8 +132,8 @@ TxAccountRepository tx_account_repository_from_repo(AccountRepo *repo) {
 }
 
 struct TransactionService {
-    TransactionRepository tx_repo;
-    TxAccountRepository   account_repo;
+    TransactionRepository tx_repo;      // port: tx SQL + unit-of-work
+    TxAccountRepository   account_repo; // port: subset of account ops
 };
 
 TransactionService *transaction_service_new(TransactionRepository tx_repo,
@@ -160,6 +165,7 @@ static void free_account_array(Account **arr, size_t count) {
 static ServiceError translate_repo_error(const RepoError *rerr,
                                           const char *entity)
 {
+    // Shorthand: NotFound → service not_found; everything else via from_repo.
     if (!rerr || rerr->code == REPO_ERROR_NONE) return service_error_ok();
     if (rerr->code == REPO_ERROR_NOT_FOUND)     return service_error_not_found(entity);
     return service_error_from_repo(rerr);
@@ -314,6 +320,8 @@ static void *stats_worker_fn(void *raw) {
                                    transaction_from_account_id(tx).value);
         }
 
+        /* net = money in to owned accounts minus money out from owned accounts.
+         * Same tx can touch two owned accounts (transfer) — both sides count. */
         int64_t net = (to_owned ? value : 0) - (from_owned ? value : 0);
 
         atomic_fetch_add_explicit(&s->transaction_count, 1, memory_order_relaxed);
@@ -391,7 +399,8 @@ static int compare_entry_desc(const void *a, const void *b) {
     return compare_entry_asc(b, a);
 }
 
-// Apply balance changes per transaction type, then persist accounts.
+// Debit/credit the right account(s) per tx type before the row is inserted.
+// Deposits/payments use BANK_ACCOUNT_ID (id=1) as the external counterparty.
 static bool record_transaction_apply_balances(
     TransactionService *svc,
     const RecordTransactionCommand *cmd,
@@ -657,7 +666,7 @@ bool transaction_service_compute_account_statement(
         qsort(txs, count, sizeof(Transaction *), compare_tx_by_recorded_on);
     }
 
-    // 4. Reconstruct opening balance from signed deltas.
+    // 4. Opening balance = current balance minus sum of all signed deltas.
     int64_t total = 0;
     for (size_t i = 0; i < count; ++i) {
         int64_t val = transaction_value_cents(txs[i]);
@@ -666,7 +675,7 @@ bool transaction_service_compute_account_statement(
     }
     int64_t running = current_balance - total;
 
-    // 5. Forward pass: compute balance-after per entry.
+    // 5. Walk forward from opening balance; each entry stores balance-after.
     AccountStatementEntry *entries = NULL;
     if (count > 0) {
         entries = (AccountStatementEntry *)calloc(
@@ -740,6 +749,7 @@ bool transaction_service_compute_account_statement(
         memcpy(asc, entries, count * sizeof(AccountStatementEntry));
         qsort(asc, count, sizeof(AccountStatementEntry), compare_entry_asc);
         out->has_opening = true;
+        // Oldest entry in range: balance-before = balance-after − delta.
         out->opening_balance_cents = asc[0].balance_after_cents - asc[0].value_cents;
         out->has_closing = true;
         out->closing_balance_cents = asc[count - 1].balance_after_cents;
@@ -986,6 +996,7 @@ static int compare_payment_cat(const void *a, const void *b) {
     return strcmp(ca->category, cb->category);
 }
 
+// Payment descriptions look like "Payment | category: X | merchant: Y | note: Z".
 static void parse_payment_category(const char *description, char *out, size_t out_sz) {
     snprintf(out, out_sz, "Other");
     if (!description) return;
@@ -1031,6 +1042,7 @@ static bool tx_passes_filters(
     return true;
 }
 
+// Same as compute_user_statistics, plus optional filters and payment-category breakdown.
 bool transaction_service_compute_user_statistics_extended(
     TransactionService *svc,
     UserId user_id,
@@ -1115,6 +1127,7 @@ bool transaction_service_compute_user_statistics_extended(
 
     all_count = dedupe_transactions_by_id(all_txs, all_count);
 
+    // Parallel aggregation (same worker path as compute_user_statistics).
     StatsShared shared;
     atomic_init(&shared.total_incoming, 0);
     atomic_init(&shared.total_outgoing, 0);
@@ -1191,6 +1204,7 @@ bool transaction_service_compute_user_statistics_extended(
     }
 
     if (out_payment_cats && out_payment_cat_count) {
+        // Second pass: group PAYMENT txs by "category:" field in description.
         PaymentCategoryTotal *cats = NULL;
         size_t cat_count = 0, cat_cap = 0;
         for (size_t i = 0; i < all_count; ++i) {
@@ -1279,7 +1293,7 @@ static bool ensure_account_owned_by(
     return true;
 }
 
-// Civil UTC -> time_t (portable; matches Rust UTC bounds).
+// Proleptic Gregorian civil date → UTC epoch (no local TZ).
 static time_t utc_civil_to_time(int year, int month, int day,
                                 int hour, int min, int sec) {
     int y = year;

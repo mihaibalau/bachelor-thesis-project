@@ -9,6 +9,8 @@
 #include "../domain/include/transaction_type.h"
 #include "../domain/include/error.h"
 
+// TransactionRepo = SQL for transactions; delegates tx control to Db (BEGIN/COMMIT).
+
 struct TransactionRepo {
     Db *db;
 };
@@ -100,7 +102,7 @@ bool transaction_repo_get_by_id(
     Transaction **out,
     RepoError *err
 ) {
-    // 1. Query by id; map row to domain or NotFound.
+    // Query by id; map row to domain or NotFound.
     if (!repo || !out) {
         if (err) *err = repo_error_db("TransactionRepo::get_by_id: invalid arguments");
         return false;
@@ -144,7 +146,7 @@ bool transaction_repo_insert(
     TransactionId *out_id,
     RepoError *err
 ) {
-    // 1. INSERT row; return generated id.
+    // INSERT row; return generated id.
     if (!repo || !tx || !out_id) {
         if (err) *err = repo_error_db("TransactionRepo::insert: invalid arguments");
         return false;
@@ -319,6 +321,7 @@ bool transaction_repo_list_for_account(
     return true;
 }
 
+// Tx control on shared Db* (record_transaction uses tx_repo's port).
 bool transaction_repo_begin(TransactionRepo *repo, RepoError *err) {
     if (!repo) {
         if (err) *err = repo_error_db("TransactionRepo::begin: invalid arguments");

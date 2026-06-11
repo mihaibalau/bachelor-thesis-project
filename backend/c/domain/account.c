@@ -25,7 +25,7 @@ static bool account_init(
     Account *out,
     DomainError *err
 ) {
-    // 1. Validate args and non-negative balance.
+    // Reject null out/iban and negative balance.
     if (!out || !iban) {
         if (err) *err = domain_error_validation("Account: invalid arguments");
         return false;
@@ -147,6 +147,7 @@ bool account_credit(Account *a, int64_t amount_cents, DomainError *err) {
         if (err) *err = domain_error_validation("Credit amount must be > 0");
         return false;
     }
+    // Guard INT64 overflow before adding to balance.
     if (amount_cents > 0 && a->balance_cents > INT64_MAX - amount_cents) {
         if (err) *err = domain_error_validation("Balance overflow");
         return false;

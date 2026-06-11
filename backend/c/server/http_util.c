@@ -9,6 +9,11 @@
 
 #define HTTP_BODY_MAX_BYTES (1024 * 1024)
 
+/*
+ * libmicrohttpd delivers POST bodies in chunks across callbacks.
+ * con_cls holds a BodyBuffer* between calls until the full body is read.
+ */
+
 // ── Request body buffering ────────────────────────────────────────────────
 
 BodyBuffer *body_buffer_new(void) {
@@ -107,7 +112,7 @@ enum MHD_Result http_send_service_error(
             body.status, body.code, body.message ? body.message : "");
     }
 
-    // 1. Build ErrorBody JSON (matches Rust shape).
+    // Build ErrorBody JSON (matches Rust shape).
     json_t *root = json_object();
     json_object_set_new(root, "status",  json_integer(body.status));
     json_object_set_new(root, "code",    json_string(body.code));

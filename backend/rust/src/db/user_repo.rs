@@ -41,7 +41,7 @@ impl UserRepo {
             .fetch_optional(self.db.pool())
             .await?;
 
-        // 1. Map missing row to NotFound, then rehydrate domain entity
+        // Map missing row to NotFound, then rehydrate domain entity
         let row = row.ok_or_else(|| RepoError::not_found("user"))?;
         Ok(User::try_from(row)?)
     }
@@ -209,7 +209,7 @@ impl UserRepo {
     }
 
     pub async fn delete(&self, user_id: UserId) -> Result<(), RepoError> {
-        // 1. Delete by id; treat zero rows as NotFound
+        // Delete by id; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
             DELETE FROM users
@@ -232,7 +232,7 @@ impl TryFrom<UserRow> for User {
     type Error = DomainError;
 
     fn try_from(row: UserRow) -> Result<Self, Self::Error> {
-        // 1. Parse email value object, then rehydrate with DB id
+        // Parse email value object, then rehydrate with DB id
         let id = UserId(row.id);
         let email: Email = row.email.parse()?;
 

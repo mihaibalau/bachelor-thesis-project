@@ -1,0 +1,238 @@
+\chapter{Memory Management and Backend Architecture}
+\label{chap:ch3}
+
+\par For most programming languages, memory management is of little concern to the
+developer. However, for these two languages, the main similarity is that the
+application must be developed with memory usage in mind. Specifically, in C you
+must pay close attention to how every bit is allocated, as you are directly
+responsible for any small mistake---everything is in your hands. In Rust, on the
+other hand, you are constrained by unique development principles designed to keep
+everything safe yet equally efficient.
+
+\section{Manual Memory Management in C}
+\label{sec:ch3sec1}
+
+In C, memory management requires explicit programmer control. Domain objects can
+be allocated on the stack for short-lived values or on the heap using
+\texttt{malloc} for longer lifetimes. Each allocation must be paired with a
+corresponding \texttt{free} call, and the programmer must track object lifetimes
+across function calls.
+
+Local variables on the stack are created when the function starts and released
+automatically when it returns. On the heap, the programmer decides both when to
+allocate and when to free the memory with \texttt{malloc} and \texttt{free}.
+In Gentlix Bank, small helper values such as loop counters stay on the stack,
+while long-lived domain objects like \texttt{Account} or \texttt{Transaction}
+are allocated on the heap and passed around by pointer.
+
+When dynamic allocation is used, domain entities follow a conventional pattern
+with constructor and destructor functions. In our application,
+\texttt{account\_create()} internally calls \texttt{malloc}, performs validation,
+and frees the allocation immediately if construction fails---the caller never sees
+a half-initialised object, but must still call \texttt{account\_free()} on every
+successful return:
+
+\clearpage
+
+\begin{lstlisting}[language=C, caption={account.c --- Constructor allocates and
+validates. On failure the allocation is freed before returning NULL; on success
+the caller owns the pointer and must free it.}]
+Account *account_create(UserId user_id, AccountType account_type,
+                        Currency currency, int64_t balance_cents,
+                        const IBAN *iban, DomainError *err) {
+    Account *a = (Account *)malloc(sizeof *a);
+    if (!a) { if (err) *err = domain_error_validation("out of memory");
+               return NULL; }
+    if (!account_init(false, dummy, user_id, account_type,
+                      currency, balance_cents, iban, a, err)) {
+        free(a);   /* must free before returning on error */
+        return NULL;
+    }
+    return a;      /* caller is now responsible for account_free(a) */
+}
+
+void account_free(Account *a) { free(a); }
+\end{lstlisting}
+
+This pattern provides flexibility but requires strict discipline---missing a
+\texttt{free} call creates memory leaks, while double-free or use-after-free bugs
+crash the application. The C approach works well for performance-critical systems
+but exposes the entire codebase to memory safety risks.
+
+Another source of bugs in C is the use of \texttt{NULL} pointers. Many functions
+return \texttt{NULL} to signal that no value was found or that an allocation
+failed. Every call site must test for \texttt{NULL} before dereferencing the
+pointer; forgetting this check can easily cause a crash.
+
+A related problem is the dangling pointer. Even after calling \texttt{free}, the
+pointer still holds the old memory address. If we use it again by mistake, the
+behaviour is undefined---in a banking application this is especially dangerous,
+because a wrong read or write can silently corrupt balances or transaction records
+without any compiler warning. A missed \texttt{free()} on an error path in the 
+transaction service is an example of temporal risk at the application layer; 
+Chapter~\ref{chap:ch5} returns to Gentlix with a fuller safety picture.
+
+\newpage
+\section{Rust Ownership and Borrowing Model}
+\label{sec:ch3sec2}
+
+Rust eliminates manual memory management through its ownership system, enforced
+entirely at compile time. Each value has exactly one owner, and when that owner
+goes out of scope, Rust automatically invokes destructors via the \texttt{Drop}
+trait. This guarantees memory cleanup without garbage collection overhead.
+
+By default, values in Rust live on the stack. A value moves to the heap only
+when we wrap it in a smart pointer such as \texttt{Box<T>} or \texttt{Arc<T>}.
+In Gentlix Bank, most domain values like a single \texttt{Transaction} start as
+stack variables and are moved to the heap only when they need to be shared across
+threads or stored behind a repository interface.
+
+Rust's borrowing model allows safe sharing and mutation through references.
+Immutable references (\texttt{\&T}) enable read-only access, while mutable
+references (\texttt{\&mut T}) guarantee exclusive write access. The compiler
+verifies that mutable references never coexist with other references, preventing
+data races. The same \texttt{account\_credit}/\texttt{account\_balance}
+distinction from C is expressed directly in the method signature---and enforced
+by the compiler, not by convention:
+
+\begin{lstlisting}[language=Rust, caption={account.rs --- \texttt{\&self} grants
+read-only access; \texttt{\&mut self} grants exclusive mutable access. The
+compiler rejects any call that violates these contracts.}]
+pub fn balance_cents(&self) -> i64 { self.balance_cents }
+
+pub fn credit(&mut self, amount_cents: i64) -> Result<(), DomainError> {
+    if amount_cents <= 0 { return Err(DomainError::validation("...")); }
+    self.balance_cents += amount_cents;
+    Ok(())
+}
+\end{lstlisting}
+
+This model results in simpler function contracts: methods take \texttt{\&self}
+or \texttt{\&mut self} without exposing allocation details to callers, and the
+compiler inserts cleanup code automatically when a value goes out of scope.
+
+Instead of \texttt{NULL} pointers, Rust uses \texttt{Option<T>} to represent
+values that may be absent. The compiler forces every call site to handle both
+\texttt{Some} and \texttt{None} before the inner value can be used, so a
+missing check is a compile-time error, not a runtime crash.
+
+The borrow checker also prevents dangling references entirely. A reference
+cannot outlive the value it points to, so storing or returning a reference to
+freed memory simply does not compile. The class of bugs described in
+Section~\ref{sec:ch3sec1}---dangling pointers, use-after-free,
+double-free---does not exist in safe Rust.
+
+\section{Immutability and Shadowing}
+\label{sec:ch3sec3}
+
+In C, every local variable is mutable by default. The \texttt{const} keyword
+can mark a pointer parameter as read-only, but this protection is limited: it
+only restricts access through that specific pointer, and another part of the
+program can still cast \texttt{const} away and modify the value. There is no
+language mechanism that guarantees a variable will never change after it is
+created.
+
+Rust takes the opposite approach. Every binding declared with \texttt{let} is
+immutable by default. To allow mutation, the programmer must write
+\texttt{let mut} explicitly. This makes the intent clear at the point of
+declaration and prevents accidental modifications in long functions.
+
+Rust also supports shadowing: a new \texttt{let} binding can reuse the same
+name as an earlier one, hiding the old value from that point forward. This is
+useful when a raw value needs to be validated or transformed into a stronger
+type. In the service layer of Gentlix Bank, a raw string from the request is
+parsed into a validated domain type under the same name:
+
+\begin{lstlisting}[language=Rust, caption={user.rs (service) --- Shadowing
+replaces the raw String with a validated Email. After this line, the raw
+value is unreachable; only the validated type exists in scope.}]
+let email: Email = cmd.email.parse()?;
+// cmd.email (raw String) is now shadowed - unreachable from here
+\end{lstlisting}
+
+In C, the equivalent transformation requires a separate variable name or
+careful discipline to avoid using the raw value after validation. The compiler
+offers no help if the programmer accidentally reads the unvalidated string
+later in the function.
+
+\section{Lifetime Safety in Practice}
+\label{sec:ch3sec4}
+
+The three sections above describe individual mechanisms. Together, they form a
+broader difference in how each language treats safety over time.
+
+In C, the programmer is responsible for the full lifetime of every object: when
+it is created, when it is valid to read or write, and when it must be freed.
+Getting this right is possible, but the compiler does not check it. A pointer
+to a freed \texttt{Account} looks identical to a valid one; a missing
+\texttt{NULL} check compiles without a warning; a \texttt{const} cast silently
+removes a protection. Each of these mistakes produces undefined behaviour that
+may only appear in production, under specific conditions.
+
+In Rust, the compiler tracks the lifetime of every value and every reference.
+It knows when a value is dropped, whether a reference is still valid, and
+whether two references could alias. A program that violates any of these rules
+does not compile. This moves an entire class of bugs---use-after-free, double-free,
+dangling pointers, data races---from runtime to compile time.
+
+The cost is a steeper learning curve. Beginners often encounter the borrow
+checker when they write code that seems correct but violates a lifetime rule.
+Over time, working through these errors tends to build better habits around 
+ownership and mutation — even if the learning curve feels steep at first. 
+In a fintech application like Gentlix Bank, where correctness is critical, 
+this trade-off is a strong argument in favour of Rust.
+
+\section*{Summary}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{|l|p{5.5cm}|p{5.5cm}|}
+\hline
+\textbf{Aspect} & \textbf{C} & \textbf{Rust} \\
+\hline
+Allocation & Manual \texttt{malloc}/\texttt{free} &
+Automatic via ownership \\
+\hline
+Stack vs.\ heap & Programmer decides for each value
+(stack local or heap pointer). Stack values are cheap,
+heap values must be freed manually. &
+Local variables live on the stack by default; values move
+to the heap only through smart pointers such as \texttt{Box}
+or \texttt{Arc}. \\
+\hline
+Sharing & Raw pointers, manual \texttt{NULL} checks &
+\texttt{\&T}/\texttt{\&mut T}, compile-time checked \\
+\hline
+Null / optional values & \texttt{NULL} pointer used to mean
+``no value''; every call site must remember to check before
+dereference. &
+No \texttt{NULL} pointers in safe code; optional values use
+\texttt{Option<T>}, and the compiler forces both cases to be
+handled. \\
+\hline
+Cleanup & Explicit \texttt{account\_free()} calls &
+Automatic \texttt{Drop} trait \\
+\hline
+Mutation intent & \texttt{const} pointer convention &
+\texttt{\&self}/\texttt{\&mut self} enforced by compiler \\
+\hline
+Immutability & \texttt{const} qualifiers on pointers and
+variables; can be bypassed by casts. &
+Default \texttt{let}, explicit \texttt{mut}; borrow checker
+enforces read-only or mutable access rules. \\
+\hline
+Lifetime errors & Runtime crashes or leaks if a pointer is
+used after \texttt{free} or if an object is freed too late. &
+Compile-time prevention: the compiler tracks lifetimes and
+rejects code that could outlive its owners. \\
+\hline
+Dangling references & Easy to create dangling pointers by
+storing or returning a pointer after \texttt{free}; behaviour
+is undefined. &
+References cannot outlive the data they borrow; creating a
+dangling reference is a compile-time error. \\
+\hline
+\end{tabular}
+\caption{Comparison of C and Rust memory management approaches}
+\label{tab:memory_comparison}
+\end{table}

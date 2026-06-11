@@ -21,7 +21,7 @@
 #include "server/include/http_server.h"
 
 int main(void) {
-    // 0. Load .env from cwd, then next to c.exe (CLion cmake-build-debug).
+    // Load .env from cwd, then next to c.exe (CLion cmake-build-debug).
     static const char *const env_paths[] = { ".env", "../.env" };
     bool loaded = load_dotenv_first(env_paths, sizeof env_paths / sizeof env_paths[0]);
     if (!loaded) {
@@ -67,6 +67,11 @@ int main(void) {
     }
 
     // 4. Wire services (ports-and-adapters).
+    /*
+     * Each *_from_*_repo wraps a concrete repo in { vtable, ctx }.
+     * Same AccountRepo* is passed to several services — one PGconn,
+     * so BEGIN on user_repo starts a tx visible to account_repo too.
+     */
 
     // 4a. UserService
     UserRepository    user_port     = user_repository_from_user_repo(user_repo);
@@ -160,7 +165,7 @@ int main(void) {
         return 1;
     }
 
-    // 6. Build AppState.
+    // 6. Build AppState — DI bag passed into every HTTP handler.
     AppState state;
     app_state_init(&state, user_svc, account_svc, tx_svc, affiliate_svc, dashboard_svc, jwt_secret);
 

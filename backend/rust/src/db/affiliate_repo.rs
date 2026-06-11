@@ -101,7 +101,7 @@ impl AffiliateRepo {
     }
 
     pub async fn delete(&self, owner_user_id: UserId, recipient_sub_account_id: AccountId) -> Result<(), RepoError> {
-        // 1. Delete composite key; treat zero rows as NotFound
+        // Delete composite key; treat zero rows as NotFound
         let result = sqlx::query!(
             r#"
             DELETE FROM affiliates

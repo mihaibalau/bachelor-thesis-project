@@ -3,6 +3,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/*
+ * RepoError = failures at the DB/repository boundary.
+ * Services translate these into ServiceError before returning to HTTP handlers.
+ */
+
 RepoError repo_error_ok(void) {
     RepoError e;
     e.code = REPO_ERROR_NONE;

@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ---- Build stage ----
 # Rust edition 2024 requires a recent toolchain (>= 1.85).
 FROM rust:1-bookworm AS build

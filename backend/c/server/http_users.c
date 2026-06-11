@@ -51,7 +51,7 @@ static enum MHD_Result handle_register(
             "\"message\":\"tag, email, first_name, last_name and password are required\"}");
     }
 
-    // 1. Parse optional birth_date (YYYY-MM-DD) into struct tm.
+    // Parse optional birth_date (YYYY-MM-DD) into struct tm.
     struct tm birth_date_tm  = {0};
     struct tm *birth_date_ptr = NULL;
     if (birth_date) {
@@ -129,7 +129,7 @@ static enum MHD_Result handle_login(
         return http_send_service_error(conn, &serr);
     }
 
-    // 1. Issue JWT on successful login.
+    // Issue JWT on successful login.
     char token[512];
     ServiceError jwt_err;
 
@@ -195,7 +195,7 @@ enum MHD_Result http_users_dispatch(
     }
 
     if (strcmp(method, MHD_HTTP_METHOD_POST) == 0) {
-        // 1. Buffer POST body across libmicrohttpd callbacks.
+        // Buffer POST body across libmicrohttpd callbacks.
         if (*con_cls == NULL) {
             BodyBuffer *bb = body_buffer_new();
             if (!bb) return MHD_NO;

@@ -2,6 +2,11 @@
 
 #include <string.h>
 
+/*
+ * DomainError = validation failures inside entity/value objects.
+ * Services map these to ServiceError before HTTP sees them.
+ */
+
 DomainError domain_error_ok(void) {
     DomainError err;
     err.code = DOMAIN_ERROR_NONE;

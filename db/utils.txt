@@ -1,1 +1,2 @@
-docker exec -it gentlix-postgres psql -U mihai -d gentlix_bank
+# Handy psql one-liners (adjust user/db to match your setup)
+docker exec -it gentlix-postgres psql -U USER -d gentlix_bank

@@ -28,7 +28,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../features/auth/AuthContext';
 import { useAccounts } from '../context/AccountsContext';
 import { useColorMode } from '../../features/theme/useColorMode';
-import gentlixLogo from '../../assets/logo.png';
+const LOGO_URL = '/logo.png';
 
 const NAV = [
     { to: '/app/dashboard', label: 'Dashboard', icon: <DashboardOutlinedIcon /> },
@@ -103,7 +103,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     const sidebar = (
         <Box sx={{ width: 260, py: 2, height: '100%', display: 'flex', flexDirection: 'column' }}>
             <Stack direction="row" spacing={1.5} sx={{ px: 2, mb: 2, alignItems: 'center' }}>
-                <Box component="img" src={gentlixLogo} alt="Gentlix Bank" sx={{ width: 32, height: 32, borderRadius: 1.5 }} />
+                <Box component="img" src={LOGO_URL} alt="Gentlix Bank" sx={{ width: 32, height: 32, borderRadius: 1.5 }} />
                 <Box>
                     <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>Gentlix Bank</Typography>
                     <Typography variant="caption" sx={{ color: 'text.secondary' }}>Client portal</Typography>

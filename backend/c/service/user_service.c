@@ -59,6 +59,12 @@ static bool hash_password(const char *password, char out_encoded[ARGON_ENCODED_L
 }
 
 // UserRepo adapter.
+/*
+ * Port pattern (manual vtable — Rust trait equivalent):
+ *   UserRepository { vtable*, ctx* }  where ctx = UserRepo*
+ * Each *_adapter casts ctx and forwards to the concrete repo fn.
+ * Call: svc->user_repo.vtable->get_by_id(svc->user_repo.ctx, id, &out, &err)
+ */
 
 static bool user_repo_get_by_id_adapter(
     void *ctx,
@@ -137,6 +143,7 @@ static const UserRepositoryVTable USER_REPO_VTABLE = {
 };
 
 UserRepository user_repository_from_user_repo(UserRepo *repo) {
+    // Bundle vtable + concrete repo pointer into one port value.
     UserRepository r;
     r.vtable = &USER_REPO_VTABLE;
     r.ctx = repo;
@@ -181,8 +188,8 @@ AccountRepository account_repository_from_account_repo(AccountRepo *repo) {
 }
 
 struct UserService {
-    UserRepository    user_repo;
-    AccountRepository account_repo;
+    UserRepository    user_repo;    // port: user persistence + tx control
+    AccountRepository account_repo; // port: only what registration needs
 };
 
 UserService *user_service_new(UserRepository user_repo,
@@ -207,6 +214,7 @@ static bool handle_repo_lookup_result(
     User **maybe_user,
     ServiceError *serr
 ) {
+    // Repo returns false for both "not found" and DB errors — map each to ServiceError.
     if (repo_ok) {
         if (serr) *serr = service_error_ok();
         return true;
@@ -355,8 +363,7 @@ bool user_service_register_user(UserService *svc,
         }
     }
 
-    // 7. Persist the user and its default account atomically (single DB
-    //    transaction: both rows commit together or roll back together).
+    // 7. Persist user + default account in one DB transaction.
     if (!svc->user_repo.vtable->begin(svc->user_repo.ctx, &rerr)) {
         user_free(user);
         if (err) *err = service_error_from_repo(&rerr);
@@ -378,6 +385,7 @@ bool user_service_register_user(UserService *svc,
 
     user_free(user);
 
+    // Insert default Regular/RON account; rollback user row on failure.
     Account *default_account = account_create(
         new_id,
         ACCOUNT_TYPE_REGULAR,

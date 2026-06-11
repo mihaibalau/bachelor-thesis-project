@@ -2,6 +2,10 @@
 #include "../util/include/log.h"
 #include <string.h>
 
+/*
+ * MHD_get_connection_values callback: stops at first Authorization header.
+ * Returning MHD_NO breaks the iteration early.
+ */
 static enum MHD_Result get_authorization_header(
     void *cls,
     enum MHD_ValueKind kind,

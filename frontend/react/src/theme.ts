@@ -1,6 +1,7 @@
 import { alpha, createTheme } from '@mui/material/styles';
 import type { PaletteMode, ThemeOptions } from '@mui/material';
 
+// MUI design tokens for Gentlix (gold primary, dark-first palette).
 const getDesignTokens = (mode: PaletteMode): ThemeOptions => ({
     palette: {
         mode,

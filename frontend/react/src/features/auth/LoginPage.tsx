@@ -24,7 +24,6 @@ import type { MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { useColorMode } from '../theme/useColorMode';
-import gentlixLogo from '../../assets/logo.png';
 import { AUTH_PRIMARY_BUTTON_SX } from '../../shared/buttonStyles';
 import { ApiError } from '../../shared/apiError';
 
@@ -165,7 +164,7 @@ export function LoginPage() {
                             >
                                 <Box
                                     component="img"
-                                    src={gentlixLogo}
+                                    src="/logo.png"
                                     alt="Gentlix Bank logo"
                                     sx={{
                                         width: 52,

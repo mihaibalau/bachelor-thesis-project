@@ -30,6 +30,7 @@ export function listAffiliates(params: ListAffiliatesParams = {}): Promise<Pagin
     return apiClient.get<PaginatedAffiliates>(`/affiliates${qs ? `?${qs}` : ''}`);
 }
 
+// One saved affiliate by recipient sub-account id.
 export function getAffiliate(subAccountId: number): Promise<Affiliate> {
     return apiClient.get<Affiliate>(`/affiliates/${subAccountId}`);
 }
@@ -39,14 +40,17 @@ export function resolveTarget(req: ResolveTargetRequest): Promise<ResolvedTarget
     return apiClient.post<ResolvedTarget, ResolveTargetRequest>('/affiliates/resolve-target', req);
 }
 
+// Save nickname for an existing recipient sub-account.
 export function createAffiliate(req: CreateAffiliateRequest): Promise<void> {
     return apiClient.post<void, CreateAffiliateRequest>('/affiliates', req);
 }
 
+// Rename saved affiliate nickname.
 export function updateAffiliateNickname(subAccountId: number, nickname: string): Promise<void> {
     return apiClient.patch<void, { nickname: string }>(`/affiliates/${subAccountId}`, { nickname });
 }
 
+// Remove affiliate link.
 export function deleteAffiliate(subAccountId: number): Promise<void> {
     return apiClient.delete<void>(`/affiliates/${subAccountId}`);
 }
